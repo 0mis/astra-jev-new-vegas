@@ -15,8 +15,17 @@ def recording_health(folder):
         state['audio_frames']<=0 or len(frames)<2 or frames[-1]<=frames[-2] or
         time.time()-(folder/'progress.txt').stat().st_mtime>4):
         raise RuntimeError('Recording has not demonstrated fresh video and audio progress')
+    if state.get('audio_codec')=='aac':
+        audio_progress=folder/'audio-progress.txt'
+        with audio_progress.open('rb') as f:
+            f.seek(0,2);size=f.tell();f.seek(max(0,size-4096))
+            audio_text=f.read().decode('ascii',errors='ignore')
+        timestamps=[int(line.split('=',1)[1]) for line in audio_text.splitlines() if line.startswith('out_time_us=') and line.split('=',1)[1].lstrip('-').isdigit()]
+        if len(timestamps)<2 or timestamps[-1]<=timestamps[-2] or time.time()-audio_progress.stat().st_mtime>4:
+            raise RuntimeError('AAC encoder has not demonstrated fresh audio progress')
     return {'healthy':True,'video_frames':frames[-1],'audio_frames':state['audio_frames'],
-            'session':folder.name,'checked_at':time.time()}
+            'session':folder.name,'checked_at':time.time(),'game_pid':state.get('game_pid'),
+            'window_handle':state.get('window_handle'),'source_size':state.get('source_size')}
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--pid',type=int,required=True)

@@ -1,37 +1,22 @@
 # Astra + Jev: Fallout: New Vegas
 
-An experiment in splitting game decisions between a fast typed model and a planning assistant. **This is a work in progress, not a completed autonomous playthrough.**
+A work in progress: Jev selects frequent typed actions, Astra develops and supervises the controller, and local recording preserves gameplay. The campaign is **not complete**, and this is not yet an unattended full-game player.
 
-The intended division is simple: Typesafe Jev chooses frequent actions from fresh structured game observations. Astra sets objectives, checks mistakes, and handles recovery. A recorder preserves the run, and timestamped public commentary can be added to the eventual video.
+## Verified progress
 
-## What works so far
+- Jev completed the recorded opening prompts, default character creation and most attribute allocation; Astra supplied one Perception increment during calibration.
+- Normal keyboard and measured relative mouse input walked to and activated the Vigor Tester. A read-only floor mesh route then took the character around an interior wall to the couch, which it activated successfully.
+- The opening-room navigation pilot reads quest targets, loaded references, crosshair identity and actual camera position. This is game telemetry, not image recognition. No game-memory writes, console commands, teleportation or quest cheats are used.
+- Doc Mitchell's questionnaire advanced using observed response choices and a verified menu mouse click. Suggested Guns, Sneak and Speech tags were accepted before the broader autonomy policy was introduced. Combat, exterior travel and many later menus remain unverified or unfinished.
+- A six-request benchmark measured a 193.5 ms warm Jev median over five warm calls, with a 505.5 ms cold request. These are decision latencies, not gameplay frame rates.
+- The corrected 45-second capture pilot decoded 45.53 seconds of 720p30 video and 45.035 seconds of stereo audio, with zero reported audio discontinuities and clean encoder exits. Whole-campaign reliability is not established.
+- A later 28-minute segment reported one audio discontinuity after about 26.5 minutes. That footage and warning are preserved. A larger capture buffer passed another 45-second pilot and the following segment; this does not establish gap-free long-duration capture.
 
-- A persistent HTTPS client reduced repeated menu-prerequisite decisions to a 193.5 ms warm median across five warm calls (229.9 ms maximum), following a 505.5 ms cold call. All six chose the correct recording prerequisite. This measures decision latency, not gameplay throughput.
-- The read-only observer returned player and menu data in approximately 22–25 ms on the test machine.
-- A 20-second recording pilot produced 604 frames of decoded 1280×720 video at 30 fps, 960,000 stereo audio samples per channel, nonzero sound, and clean finalization.
-- Existing saves were backed up before setup.
-- A fresh recorded campaign has started in Doc Mitchell's house. Jev selected New/Yes; Astra repaired the confirmation key mapping. The continuous menu loop subsequently dismissed the opening notifications and accepted the default Courier name automatically, then handed the unfamiliar appearance screen to the planner.
-- Normal timed keyboard input has foreground, recording, audio-warning, single-owner and stop-file guards. It releases keys on failure and can release as soon as an observed menu changes.
+## Requirements and credentials
 
-## What is still unfinished
+Windows, Python 3.12, an owned Steam copy of Fallout: New Vegas 1.4.0.525 and Typesafe API access. Install `requirements.txt` into `.venv`. Layouts are version-specific; modified executables or mods can invalidate them.
 
-- Full gameplay control: the existing continuous loop handles a small set of opening menus only. It also advanced the default appearance pages through DONE, but the final character confirmation still needs input calibration. Navigation, combat and most later menus remain unfinished. The campaign is not complete.
-- Correct screen-coordinate conversion, map/navigation observations, gameplay safeguards, and recovery tests.
-- A complete campaign and verified ending, edited video, YouTube/X publication.
-- Recording reliability over a whole campaign. A longer setup capture reported an audio discontinuity; the recorder now logs these warnings explicitly. Inspect them before accepting a recording as complete.
-
-## Requirements
-
-Windows, Python 3.12, a legally installed Steam copy of Fallout: New Vegas 1.4.0.525, and Typesafe API access. Jev is a hosted model; its weights/service and the game are not included. The observer uses version-specific xNVSE layout research and opens the process with read/query permissions only. It does not inject code or write game memory.
-
-Install dependencies in a local virtual environment:
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Keep credentials out of source control. `jev_bridge.py` reads `TYPESAFE_API_KEY` from its process environment. For the optional local Windows launcher, create `typesafe-key.dpapi` yourself using the current Windows account's secure-string encryption:
+The client reads `TYPESAFE_API_KEY` from its environment. The optional PowerShell launchers load Windows-user DPAPI ciphertext from `typesafe-key.dpapi`:
 
 ```powershell
 $jevSecret = Read-Host 'Typesafe API key' -AsSecureString
@@ -39,46 +24,41 @@ $jevSecret | ConvertFrom-SecureString | Set-Content -LiteralPath .\typesafe-key.
 $jevSecret = $null
 ```
 
-The example client reserves a conservative maximum cost before each request and refuses to exceed a $1 local test cap. It makes no top-ups and no automatic network retries. Run only one decision process at a time; the ledger is not a distributed billing authority. Actual account charges and other API clients are outside its accounting.
+One client owns a durable local $1 test ledger. It reserves a conservative cost before dispatch, settles successful requests using reported input-token usage and retains reservations for uncertain requests. Legacy ledger entries remain conservative. There are no purchases, top-ups or automatic network retries. Other API clients and account billing are outside this ledger.
 
-## Run the individual components
+## Recording and input
 
-Use a windowed game with the exact title `Fallout: New Vegas`. Keep other applications away from the game window during capture; occlusion behavior has not been validated.
+Back up existing saves first. The local pilot uses a separate `JevSaves` path. `repair_input_settings.ps1` backs up both game INIs and sets that path, `bUse Joystick=0` and `bDisable360Controller=1` while the game is closed. The launcher can regenerate settings, so verify them again afterward.
 
 ```powershell
-# Replace GAME_PID with the live FalloutNV.exe process ID.
-.\.venv\Scripts\python.exe .\observe_game.py GAME_PID
-
-# Session directory must not already exist. Default duration is one hour.
-.\.venv\Scripts\python.exe .\record_game.py --title 'Fallout: New Vegas' --session .\recordings\run-001 --seconds 3600
-
-# In another terminal, after verifying the recording:
-.\invoke_jev.ps1 -GamePid GAME_PID -RequestFile .\request.example.json -RecordingFolder .\recordings\run-001
-
-# Limited automatic opening-menu controller; do not run alongside another controller.
-.\start_jev_loop.ps1 -GamePid GAME_PID -RecordingFolder .\recordings\run-001 -Seconds 300
+$nvPid = (Get-Process FalloutNV).Id
+# A new session directory is required. Capture binds to the PID and exact HWND.
+.\.venv\Scripts\python.exe .\record_game.py --title 'Fallout: New Vegas' --game-pid $nvPid --session .\recordings\run-001 --seconds 3600
+# In another terminal, after verifying real recorded video and sound:
+.\start_jev_loop.ps1 -GamePid $nvPid -RecordingFolder .\recordings\run-001 -Seconds 300
 ```
 
-The single-decision command does not send input. The separate `start_jev_loop.ps1` command does execute Jev's selected opening-menu actions through bounded normal keyboard input, verifies expected state, and stops on unsupported states. Read `loop-status.json` before resuming. Create `controller.stop` beside the scripts to request a stop; remove it manually only when you intend to resume. This does not pause the game's simulation or stop the recorder.
+The default recording is segmented H.264/MKV at 720p30, a 1500 kbps video ceiling, and separate AAC stereo audio at 128 kbps. WAV is optional. A bounded queue separates audio capture from encoding. Audio is system playback loopback, never microphone input; other applications' sounds can be included. The estimated 72-hour encoded payload is about 49.1 GiB before overhead. A 5 GiB free-space reserve stops capture. This size estimate is not a long-duration reliability test.
 
-For the tested configuration, the new-game confirmation used E, while informational messages and the character-name screen used Enter. Cursor conversion and relative mouse behavior still require validation. The game launcher can regenerate Fallout.ini; recheck a separate save path before a run and protect existing saves independently. Disabling controller mode used `bDisable360Controller=1` in the Interface section; this is a local configuration finding, not a universal input fix.
+Keep the game foreground and unobscured during play; background capture has not been validated. Inputs require matching game/recording identity, fresh advancing video and audio encoding counters, no audio discontinuity, and exclusive controller ownership. Held inputs are released on errors. At handoff, the loop tries normal Escape only in a recognized gameplay state and verifies the pause menu. Unsupported menus or lost focus can prevent that pause; inspect the result rather than assuming success.
 
-To stop a recorder cleanly, create an empty `stop.request` file inside its session directory. Wait for `session.json` to report `stopped`, `audio_finalized: true`, and `video_exit_code: 0`. Do not assume those values prove there were no capture gaps; review frame progress, audio warnings, actual decoded content and durations too.
+Create `controller.stop` beside the scripts to request a controller stop. To finalize recording, create `stop.request` inside its session directory and verify clean exits, audio finalization, warnings and decoded content. Preserve original segments, timestamps and logs for later editing.
 
-Video is segmented H.264/MKV; audio is separate 48 kHz stereo PCM/WAV. Audio uses the default playback device's system loopback, so other applications' sounds can be included. No microphone is used. A 5 GiB free-space reserve stops recording before the disk fills. Audio/video start timestamps are stored for later alignment; the files are not yet a finished YouTube upload.
+## Jev world controls
 
-## Files
+Once ordinary unpaused gameplay is recorded, run the small camera calibration, then enable world controls:
 
-- `observe_game.py`: bounded, read-only process-memory observations; coordinates are preliminary.
-- `jev_bridge.py`: typed Choice API client, conservative budget ledger, public commentary events.
-- `decide_game.py`: recording gate plus one observed decision and an execution handoff record.
-- `invoke_jev.ps1`: optional local DPAPI credential loader.
-- `record_game.py`: segmented capture and health/finalization metadata.
-- `game_input.py`: guarded normal timed keyboard and relative mouse input.
-- `jev_loop.py` and `start_jev_loop.ps1`: limited continuous opening-menu controller and local credential loader.
-- `benchmark_jev.py`: six read-only main-menu decision samples; pass `--pid GAME_PID`.
-- `request.example.json`: an example objective and legal action choices.
-- `ARCHITECTURE.md`: intended controller contract and current limitations.
-- `THIRD_PARTY.md`: external services and layout references.
+```powershell
+.\.venv\Scripts\python.exe .\calibrate_mouse.py --pid $nvPid --recording .\recordings\run-001
+.\start_jev_loop.ps1 -GamePid $nvPid -RecordingFolder .\recordings\run-001 -Seconds 300 -World
+```
 
-The original project code is MIT-licensed. Credentials, personal data, saves, game binaries/assets, and third-party source bundles are excluded. This is an independent experiment and is not affiliated with Bethesda, Obsidian, Typesafe or OpenAI.
+Calibration moves the view slightly and writes a machine-specific `mouse-calibration.json`. Jev chooses nearby targets, floor routes or direct approaches, normal movement and looking, interactions, weapon controls, dialogue and recoveries. Recent outcomes and disabled-control flags are part of each decision. Repeated ineffective actions temporarily cool down, with Astra assistance for sustained stalls or missing interfaces. Ordinary choices do not require planner approval.
+
+Automatic floor routing currently supports a single loaded navmesh; direct steering and manual movement remain available elsewhere. The former starting-house boundary has been removed, but the broader controller is still experimental. Health, ammunition and hostility telemetry, later menus and robust exterior navigation remain unfinished. Read `loop-status.json` before resuming. Logged action IDs do not yet provide durable duplicate-action rejection: never blindly replay an uncertain action.
+
+`observe_game.py`, `navmesh.py`, `world_controller.py` and `vigor_controller.py` implement read-only observations and the tutorial pilot. `jev_bridge.py`, `jev_loop.py` and `game_input.py` implement decisions and bounded normal execution. `record_game.py` and `decide_game.py` implement recording and health gates. `benchmark_jev.py` performs read-only latency samples. The launchers are optional local credential loaders.
+
+The eventual video will use timestamped public gameplay commentary and actual selected actions, not private reasoning transcripts or invented Jev quotations. Editing and YouTube/X publication follow a verified ending; neither has been completed for this campaign.
+
+Original code is MIT-licensed. Secrets, personal data, game assets, saves and third-party source bundles are excluded. See THIRD_PARTY.md for layout and dependency sources. This independent experiment is not affiliated with Bethesda, Obsidian, Typesafe or OpenAI.

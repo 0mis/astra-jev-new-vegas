@@ -1,9 +1,31 @@
 """Bounded Jev decision client. Credentials are read only from the environment."""
-import json, os, time, http.client, pathlib, datetime,math,msvcrt
+import json, os, time, http.client, pathlib, datetime,math,msvcrt,uuid
 ROOT = pathlib.Path(__file__).resolve().parent
 LEDGER = ROOT / "jev-usage.jsonl"
 PRICE = 0.042 / 1_000_000
 CAP = 1.0
+
+def ledger_total(rows):
+    """Keep uncertain requests reserved; charge confirmed usage once per request."""
+    legacy, pending = 0.0, {}
+    for row in rows:
+        ident = row.get('request_id')
+        if not ident:
+            legacy += row.get('reserved_usd', 0)
+        elif 'reserved_usd' in row:
+            if ident in pending: raise RuntimeError('Duplicate budget reservation')
+            pending[ident] = row['reserved_usd']
+        elif 'settled_usd' in row:
+            if ident not in pending: raise RuntimeError('Settlement without reservation')
+            cost = row['settled_usd']
+            if not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0:
+                raise RuntimeError('Invalid usage cost')
+            pending[ident] = cost
+    return legacy + sum(pending.values())
+
+def append_ledger(row):
+    with LEDGER.open('a', encoding='utf-8') as output:
+        output.write(json.dumps(row)+'\n'); output.flush(); os.fsync(output.fileno())
 
 class JevClient:
     """One persistent TLS connection and one owner of the conservative cost ledger."""
@@ -14,7 +36,7 @@ class JevClient:
         if not self.lock.read(1):self.lock.write(b'0');self.lock.flush()
         self.lock.seek(0);msvcrt.locking(self.lock.fileno(),msvcrt.LK_NBLCK,1)
         previous=[json.loads(s) for s in LEDGER.read_text().splitlines()] if LEDGER.exists() else []
-        self.spent=sum(x.get('reserved_usd',0) for x in previous)
+        self.spent=ledger_total(previous)
         self.connection=http.client.HTTPSConnection('api.typesafe.ai',timeout=timeout)
     def close(self):
         self.connection.close()
@@ -25,9 +47,10 @@ class JevClient:
         body=json.dumps({'model':'jev-1.13.0','state':state,'questions':questions},separators=(',',':')).encode()
         reserved=(len(body)*2+4096)*PRICE
         if self.spent+reserved>CAP:raise RuntimeError('Conservative $1 test budget reached')
-        row={'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        request_id=str(uuid.uuid4())
+        row={'request_id':request_id,'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
              'reserved_usd':reserved,'request_bytes':len(body)}
-        with LEDGER.open('a',encoding='utf-8') as f:f.write(json.dumps(row)+'\n')
+        append_ledger(row)
         self.spent+=reserved
         started=time.perf_counter()
         try:
@@ -50,9 +73,15 @@ class JevClient:
                     raise RuntimeError('Invalid confidence')
         result={'answers':data['answers'],'latency_seconds':round(elapsed,4),'usage':data.get('usage'),
                 'model':data['model'],'estimated_usd':data.get('usage',{}).get('input_tokens',0)*PRICE}
-        with LEDGER.open('a',encoding='utf-8') as f:
-            f.write(json.dumps({'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                'usage':result['usage'],'estimated_usd':result['estimated_usd'],'latency_seconds':result['latency_seconds']})+'\n')
+        settlement={'request_id':request_id,'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    'usage':result['usage'],'latency_seconds':result['latency_seconds']}
+        tokens=(result['usage'] or {}).get('input_tokens')
+        if isinstance(tokens,int) and not isinstance(tokens,bool) and tokens>0:
+            settlement['settled_usd']=tokens*PRICE
+        append_ledger(settlement)
+        if 'settled_usd' in settlement:
+            self.spent+=settlement['settled_usd']-reserved
+        result['request_id']=request_id
         return result
 
 _client=None

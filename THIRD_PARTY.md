@@ -6,3 +6,5 @@
 - **imageio-ffmpeg**, **FFmpeg**, **SoundCard** and **NumPy** are installed separately through the requirements. They retain their own licenses. FFmpeg build configuration determines its applicable license; this repository does not redistribute a compiled FFmpeg binary.
 
 The MIT license applies only to this repository's original source and documentation.
+
+- JIP LN NVSE primary layout research: https://github.com/jazzisparis/JIP-LN-NVSE (GameForms.h and internal/netimmerse.h for navmesh, world camera and scene graph fields). Layout facts were implemented independently; no source bundle or plugin is distributed here. No JIP installation is required.

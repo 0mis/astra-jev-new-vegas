@@ -1,8 +1,30 @@
 """Game-window video plus system loopback audio; never records the microphone."""
-import argparse,datetime,json,pathlib,subprocess,time,wave,os,shutil,warnings
+import argparse,datetime,json,pathlib,subprocess,time,wave,os,shutil,warnings,ctypes as c,ctypes.wintypes as w,queue,threading
 import numpy as np
 import soundcard as sc
 import imageio_ffmpeg
+
+def game_window(pid, title):
+    from observe_game import Observer
+    observer=Observer(pid);observer.close()
+    user=c.WinDLL('user32',use_last_error=True)
+    user.GetWindowThreadProcessId.argtypes=[w.HWND,c.POINTER(w.DWORD)]
+    user.GetClientRect.argtypes=[w.HWND,c.POINTER(w.RECT)]
+    user.IsWindowVisible.argtypes=[w.HWND]
+    user.GetWindowTextW.argtypes=[w.HWND,w.LPWSTR,c.c_int]
+    matches=[]
+    @c.WINFUNCTYPE(w.BOOL,w.HWND,w.LPARAM)
+    def visit(hwnd, _):
+        owner=w.DWORD();user.GetWindowThreadProcessId(hwnd,c.byref(owner))
+        if owner.value==pid and user.IsWindowVisible(hwnd):
+            text=c.create_unicode_buffer(512);user.GetWindowTextW(hwnd,text,len(text))
+            if text.value==title:matches.append(int(hwnd))
+        return True
+    user.EnumWindows(visit,0)
+    if len(matches)!=1:raise RuntimeError('Expected exactly one visible window owned by the verified game')
+    rect=w.RECT()
+    if not user.GetClientRect(matches[0],c.byref(rect)):raise c.WinError(c.get_last_error())
+    return matches[0],[rect.right-rect.left,rect.bottom-rect.top]
 
 def write_state(folder,state):
     tmp=folder/"session.next.json"
@@ -20,7 +42,14 @@ def main():
     p.add_argument("--title",required=True)
     p.add_argument("--seconds",type=float,default=3600)
     p.add_argument("--session",required=True)
+    p.add_argument("--game-pid",type=int,required=True)
+    p.add_argument("--max-video-kbps",type=int,default=1500)
+    p.add_argument("--audio-format",choices=['wav','aac'],default='aac')
+    p.add_argument('--audio-buffer-frames',type=int,default=48000)
     args=p.parse_args()
+    if not 500<=args.max_video_kbps<=8000:raise ValueError('Video rate must be 500 to 8000 kbps')
+    if not 2048<=args.audio_buffer_frames<=96000:raise ValueError('Audio buffer outside supported bounds')
+    hwnd,source_size=game_window(args.game_pid,args.title)
     folder=pathlib.Path(args.session).resolve()
     folder.mkdir(parents=True,exist_ok=False)
     exe=imageio_ffmpeg.get_ffmpeg_exe()
@@ -29,29 +58,51 @@ def main():
     state={"state":"starting","title":args.title,"started_at":started,
            "recorder_pid":os.getpid(),"audio_frames":0,"audio_packets":0,
            "audio_peak":0.0,"audio_rate":48000,"audio_channels":2,
-           "video_files":"video-%04d.mkv","audio_files":"audio-%04d.wav",
+           "video_files":"video-%04d.mkv","audio_files":"audio-%04d."+args.audio_format,
+           "game_pid":args.game_pid,"window_handle":hwnd,"source_size":source_size,
+           "audio_codec":args.audio_format,"max_video_kbps":args.max_video_kbps,
            "microphone_recorded":False,"audio_discontinuities":0,"audio_warnings":[]}
+    state['audio_buffer_frames']=args.audio_buffer_frames
     write_state(folder,state)
     cmd=[exe,"-hide_banner","-y","-f","gdigrab","-framerate","30","-draw_mouse","0",
-         "-i","title="+args.title,"-an","-vf","scale=1280:-2",
-         "-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","4M","-bufsize","8M",
+         "-i","hwnd="+hex(hwnd),"-an","-vf","scale=1280:-2",
+         "-c:v","libx264","-preset","veryfast","-crf","23","-maxrate",str(args.max_video_kbps)+'k',"-bufsize",str(2*args.max_video_kbps)+'k',
          "-pix_fmt","yuv420p","-g","60","-f","segment","-segment_time","1800",
          "-segment_format","matroska","-reset_timestamps","1",
          "-progress",str(folder/"progress.txt"),str(folder/"video-%04d.mkv")]
     proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
                           stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
     state.update(encoder_pid=proc.pid,video_launch_at=time.time())
-    audio=None; n=0; failure=None
+    audio=None; audio_proc=None; audio_log=None; audio_writer=None; audio_queue=queue.Queue(maxsize=100); writer_errors=[]; n=0; failure=None
     try:
+        if args.audio_format=='aac':
+            audio_log=(folder/'audio-ffmpeg.log').open('wb')
+            audio_proc=subprocess.Popen([exe,'-hide_banner','-y','-f','s16le','-ar','48000','-ac','2','-probesize','32','-analyzeduration','0',
+                '-i','pipe:0','-c:a','aac','-b:a','128k','-f','segment','-segment_time','1800',
+                '-segment_format','adts','-reset_timestamps','1','-progress',str(folder/'audio-progress.txt'),
+                str(folder/'audio-%04d.aac')],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
+                stderr=audio_log,creationflags=subprocess.CREATE_NO_WINDOW)
+            state['audio_encoder_pid']=audio_proc.pid
+            def write_audio():
+                try:
+                    while True:
+                        packet=audio_queue.get()
+                        if packet is None:break
+                        audio_proc.stdin.write(packet);audio_proc.stdin.flush()
+                except BaseException as exc:writer_errors.append(str(exc))
+            audio_writer=threading.Thread(target=write_audio,daemon=True);audio_writer.start()
         speaker=sc.default_speaker()
         if speaker is None:raise RuntimeError("No default playback device")
         loop=sc.get_microphone(id=speaker.id,include_loopback=True)
         if not loop.isloopback:raise RuntimeError("Refusing a microphone device")
         state["audio_device"]=speaker.name
-        with loop.recorder(samplerate=48000,channels=[0,1],blocksize=2048) as rec:
+        with loop.recorder(samplerate=48000,channels=[0,1],blocksize=args.audio_buffer_frames) as rec:
             state["audio_started_at"]=time.time()
             while time.time()-started < args.seconds and not (folder/"stop.request").exists():
                 if proc.poll() is not None:raise RuntimeError("Video encoder exited before recording finished")
+                if audio_proc and audio_proc.poll() is not None:raise RuntimeError('Audio encoder exited before recording finished')
+                if writer_errors:raise RuntimeError('Audio pipe failed: '+writer_errors[0])
+                if state['audio_packets']%10==0 and game_window(args.game_pid,args.title)[0]!=hwnd:raise RuntimeError('The recorded game window changed')
                 if shutil.disk_usage(folder).free < 5*1024**3:raise RuntimeError("Recording stopped at 5GiB free-space reserve")
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
@@ -61,13 +112,15 @@ def main():
                     event={'at':time.time(),'message':message}
                     state['audio_warnings'].append(event)
                     if 'discontinuity' in message.lower():state['audio_discontinuities']+=1
-                if audio is None or n>=48000*1800:
+                if args.audio_format=='wav' and (audio is None or n>=48000*1800):
                     if audio:audio.close()
                     index=state["audio_frames"]//(48000*1800)
                     audio=wave.open(str(folder/f"audio-{index:04d}.wav"),"wb")
                     audio.setnchannels(2);audio.setsampwidth(2);audio.setframerate(48000);n=0
                 pcm=(np.clip(samples,-1,1)*32767).astype("<i2").tobytes()
-                audio.writeframes(pcm)
+                if audio_proc:
+                    audio_queue.put_nowait(pcm)
+                else:audio.writeframes(pcm)
                 n+=len(samples)
                 state["audio_frames"]+=len(samples);state["audio_packets"]+=1
                 state["audio_peak"]=max(state["audio_peak"],float(np.abs(samples).max()))
@@ -80,6 +133,17 @@ def main():
     finally:
         if audio:audio.close()
         state["audio_finalized"]=audio is not None
+        if audio_proc:
+            try:
+                audio_queue.put(None,timeout=2);audio_writer.join(timeout=15)
+                if audio_writer.is_alive() or writer_errors:raise RuntimeError('Audio writer failed to flush all captured packets')
+                audio_proc.stdin.close();audio_proc.wait(timeout=15)
+            except Exception as exc:
+                audio_proc.kill();audio_proc.wait();state['audio_stop_error']=str(exc)
+            state['audio_exit_code']=audio_proc.returncode
+            state['audio_finalized']=audio_proc.returncode==0
+            if audio_proc.returncode:failure=failure or 'Audio encoder failed'
+        if audio_log:audio_log.close()
         try:
             if proc.poll() is None:
                 proc.stdin.write(b"q\n");proc.stdin.flush()

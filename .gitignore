@@ -31,3 +31,12 @@ jev-latency-pilot.json
 *.before-*
 STATE.md
 public-export.json
+
+*.aac
+world-decisions.jsonl
+world-results.jsonl
+vigor-decisions.jsonl
+safety-events.jsonl
+mouse-calibration.json
+*-probe.json
+long-run-profile.json

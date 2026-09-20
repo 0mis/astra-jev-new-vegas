@@ -48,6 +48,54 @@ def key_event(name,up=False):
 def mouse_event(flags,dx=0,dy=0):
  return INPUT(type=0,mi=MOUSEINPUT(dx,dy,0,flags,0,0))
 
+def pause_world(pid):
+ """Emergency normal Escape, allowed when capture fails; never toggles an open menu."""
+ observer=Observer(pid); lock=(ROOT/'controller.lock').open('a+b'); acquired=False
+ result={'at':time.time(),'pid':pid,'purpose':'pause after controller handoff','verified_paused':False}
+ try:
+  lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1);acquired=True
+  if foreground_pid()!=pid:raise RuntimeError('Cannot pause a game without foreground ownership')
+  state=observer.snapshot()
+  names={menu['name'] for menu in state['menus']}
+  if 'start' not in names:
+   if names-{'hud','tutorial'} or not (state.get('player') or {}).get('cell_name'):
+    raise RuntimeError('Unknown menu or cinematic state; no blind Escape')
+   try:
+    send(key_event('escape'));time.sleep(.1)
+   finally:send(key_event('escape',True))
+   time.sleep(.25);state=observer.snapshot()
+  result['verified_paused']=any(menu['name']=='start' and any(x['text']=='Continue' for x in menu['labels']) for menu in state['menus'])
+  if not result['verified_paused']:raise RuntimeError('Pause menu was not observed')
+ except Exception as exc:result['error']=f'{type(exc).__name__}: {exc}'
+ finally:
+  observer.close()
+  if acquired:lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_UNLCK,1)
+  lock.close()
+  with (ROOT/'safety-events.jsonl').open('a',encoding='utf-8') as output:output.write(json.dumps(result)+'\n')
+ return result
+
+def point_cursor(pid,recording,x,y,actor='Astra'):
+ """Relative menu mouse movement with feedback from the observed game cursor."""
+ if not 0<=x<1280 or not 0<=y<720:raise ValueError('Cursor target outside validated client size')
+ observer=Observer(pid);gains=[4.,4.]
+ def position():
+  interface=observer.u32(0x11D8A80)
+  return [observer.floats(interface+0x38,1)[0],observer.floats(interface+0x40,1)[0]]
+ try:
+  for _ in range(24):
+   before=position();errors=[x-before[0],y-before[1]]
+   if max(abs(v) for v in errors)<3:return {'cursor':before,'target':[x,y]}
+   moves=[max(-25,min(25,round(error/gain))) for error,gain in zip(errors,gains)]
+   for i in range(2):
+    if abs(errors[i])>=3 and moves[i]==0:moves[i]=1 if errors[i]>0 else -1
+   act(pid,recording,dx=moves[0],dy=moves[1],seconds=.1,actor=actor)
+   after=position()
+   for i in range(2):
+    if moves[i] and (after[i]-before[i])/moves[i]>.1:
+     gains[i]=max(.5,min(15,(after[i]-before[i])/moves[i]))
+  raise RuntimeError('Menu cursor did not converge to its observed target')
+ finally:observer.close()
+
 def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,actor='Astra',stop_when=None):
  keys=list(keys)
  if not .05<=seconds<=3:raise ValueError('Key hold must be 0.05 to 3 seconds')
@@ -70,6 +118,7 @@ def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,
   if foreground_pid()!=pid:raise RuntimeError('Game lost foreground; input stopped')
   if (ROOT/'controller.stop').exists():raise RuntimeError('Controller stop requested')
   health=recording_health(recording)
+  if health.get('game_pid')!=pid:raise RuntimeError('Recorder is not pinned to this game process')
   state=json.loads((pathlib.Path(recording)/'session.json').read_text())
   if state.get('audio_discontinuities',0):raise RuntimeError('Audio discontinuity requires review before further input')
   return health
