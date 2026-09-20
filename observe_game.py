@@ -94,8 +94,11 @@ class Observer:
   return out
 
  def world(self,state):
-  """Loaded references and active quest only; read-only telemetry, not screen vision."""
+  """Loaded references, door destinations and journal; read-only telemetry."""
   player=self.u32(0x11DEA3C);cell=self.u32(player+0x40)
+  if not cell or not state.get('player') or hex(self.u32(cell+0xC))!=state['player'].get('cell_id'):
+   raise RuntimeError('World changed during observation')
+  space=self.u32(cell+0xC0);cells=self.loaded_cells(cell);cell_set=set(cells)
   origin=state['player']['position'];yaw=state['player']['rotation_radians'][2]
   def reference(ptr):
    base=self.u32(ptr+0x20);kind=self.read(base+4,1)[0]
@@ -105,20 +108,55 @@ class Observer:
    if not name or not all(math.isfinite(v) for v in pos):return None
    delta=[a-b for a,b in zip(pos,origin)]
    heading=math.atan2(delta[0],delta[1]);error=(heading-yaw+math.pi)%(2*math.pi)-math.pi
-   return {'ref_id':hex(self.u32(ptr+0xC)),'name':name,'kind':kind,'position':pos,
+   parent=self.u32(ptr+0x40)
+   parent_space=self.u32(parent+0xC0) if parent else 0
+   same_space=parent==cell or bool(space and parent_space==space)
+   row={'ref_id':hex(self.u32(ptr+0xC)),'name':name,'kind':kind,'position':pos,
            'distance':round(math.hypot(*delta[:2]),1),'heading_error':round(error,5),
-           'same_cell':self.u32(ptr+0x40)==cell}
+           'same_cell':parent==cell,'same_space':same_space,'loaded':parent in cell_set,
+           'cell_id':hex(self.u32(parent+0xC)) if parent else None}
+   row['worldspace_id']=hex(self.u32(parent_space+0xC)) if parent_space else None
+   # Coordinates in separate interiors are unrelated, even when numerically close.
+   if not same_space:row.update(distance=None,heading_error=None)
+   if kind==28:
+    lock=self.extra(ptr,0x2A);lock_data=self.u32(lock+0xC) if lock else 0
+    row['locked']=bool(lock_data and self.read(lock_data+8,1)[0]&1)
+    row['lock_level']=self.read(lock_data,1)[0] if row['locked'] else None
+    extra=self.extra(ptr,0x2B)
+    if extra:
+     data=self.u32(extra+0xC);linked=self.u32(data) if data else 0
+     destination=self.u32(linked+0x40) if linked else 0
+     # A paired loading door may store its lock on the opposite reference.
+     linked_lock=self.extra(linked,0x2A) if linked else 0
+     linked_lock_data=self.u32(linked_lock+0xC) if linked_lock else 0
+     if linked_lock_data and self.read(linked_lock_data+8,1)[0]&1:
+      row['locked']=True;row['lock_level']=self.read(linked_lock_data,1)[0]
+     if destination:
+      destination_space=self.u32(destination+0xC0)
+      row['destination']={'cell_id':hex(self.u32(destination+0xC)),
+                          'cell_name':self.string(self.u32(destination+0x1C)),
+                          'worldspace_id':hex(self.u32(destination_space+0xC)) if destination_space else None,
+                          'door_ref_id':hex(self.u32(linked+0xC))}
+   return row
   nearby=[]
-  for ptr in self.linked(cell+0xAC,1500):
-   if ptr==player:continue
-   try:
-    row=reference(ptr)
-    if row:nearby.append(row)
-   except (OSError,ValueError):continue
-  quest=self.u32(player+0x6B8);objectives=[]
+  seen=set()
+  for loaded_cell in cells:
+   for ptr in self.linked(loaded_cell+0xAC,1500):
+    if ptr==player or ptr in seen:continue
+    seen.add(ptr)
+    try:
+     row=reference(ptr)
+     if row and row['same_space']:nearby.append(row)
+    except (OSError,ValueError):continue
+  quest=self.u32(player+0x6B8);objectives=[];journal=[]
   for obj in self.linked(player+0x6BC,100):
    try:
-    if self.u32(obj+0x10)!=quest or self.u32(obj+0x20)!=1:continue
+    if self.u32(obj+0x20)!=1:continue
+    objective_quest=self.u32(obj+0x10)
+    journal.append({'quest':self.string(self.u32(objective_quest+0x34)),
+                    'quest_id':hex(self.u32(objective_quest+0xC)),
+                    'text':self.string(self.u32(obj+8)), 'active':objective_quest==quest})
+    if objective_quest!=quest:continue
     targets=[]
     for item in self.linked(obj+0x14,30):
      ptr=self.u32(item+0xC)
@@ -150,14 +188,43 @@ class Observer:
   except (OSError,ValueError):pass
   if camera_view:
    for row in nearby+[t for obj in objectives for t in obj['targets']]+([crosshair] if crosshair else []):
+    if not row['same_space']:continue
     delta=[a-b for a,b in zip(row['position'],camera_position)]
     row['heading_error']=round((math.atan2(delta[0],delta[1])-camera_view['yaw']+math.pi)%(2*math.pi)-math.pi,5)
   disabled=self.read(player+0x680,1)[0]
   controls={name:bool(disabled & bit) for bit,name in ((1,'movement'),(2,'look'),(4,'pipboy'),(8,'fight'),(16,'point_of_view'),(32,'rollover_text'),(64,'sneak'))}
+  target_cells={t['cell_id'] for obj in objectives for t in obj['targets'] if not t['same_space']}
+  target_spaces={t['worldspace_id'] for obj in objectives for t in obj['targets'] if not t['same_space'] and t['worldspace_id']}
+  entrances=[dict(row,quest_target=True) for row in nearby if row.get('destination',{}).get('cell_id') in target_cells or
+             row.get('destination',{}).get('worldspace_id') in target_spaces]
+  if self.u32(player+0x40)!=cell:raise RuntimeError('World changed during observation')
   return {'quest':self.string(self.u32(quest+0x34)) if quest else None,'objectives':objectives,
+          'journal':journal,'travel_targets':sorted(entrances,key=lambda row:row['distance']),
+          'worldspace_id':hex(self.u32(space+0xC)) if space else None,'loaded_cell_count':len(cells),
           'nearby':sorted(nearby,key=lambda row:row['distance'])[:40], 'crosshair':crosshair,'camera_position':camera_position,
           'camera_view':camera_view,'disabled_controls':controls,
           'observation_source':'read-only loaded-world telemetry; not visual recognition'}
+
+ def extra(self,reference,kind):
+  """Find a bounded BSExtraData entry without invoking any game functions."""
+  node=self.u32(reference+0x48);seen=set()
+  while node and node not in seen and len(seen)<64:
+   seen.add(node)
+   if self.read(node+4,1)[0]==kind:return node
+   node=self.u32(node+8)
+  return None
+
+ def loaded_cells(self,cell):
+  space=self.u32(cell+0xC0)
+  if not space:return [cell]
+  tes=self.u32(0x11DEA10);grid=self.u32(tes+8)
+  size=self.u32(grid+0xC);data=self.u32(grid+0x10)
+  if not 1<=size<=11:raise RuntimeError('Loaded exterior grid outside bounds')
+  result=[cell]
+  for ptr in struct.unpack('<'+'I'*(size*size),self.read(data,4*size*size)):
+   if ptr and ptr not in result and self.u32(ptr+0xC0)==space and self.read(ptr+0x26,1)[0]==6:
+    result.append(ptr)
+  return result
 
 if __name__=="__main__":
  obj=Observer(int(sys.argv[1]))

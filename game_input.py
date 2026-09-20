@@ -5,7 +5,7 @@ This module never writes game memory, changes quests or executes game commands.
 """
 import argparse,ctypes as c,ctypes.wintypes as w,json,pathlib,time,msvcrt,uuid
 from observe_game import Observer
-from decide_game import recording_health
+from decide_game import recording_health, read_recording_state
 
 ROOT=pathlib.Path(__file__).resolve().parent
 u=c.WinDLL('user32',use_last_error=True)
@@ -119,7 +119,7 @@ def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,
   if (ROOT/'controller.stop').exists():raise RuntimeError('Controller stop requested')
   health=recording_health(recording)
   if health.get('game_pid')!=pid:raise RuntimeError('Recorder is not pinned to this game process')
-  state=json.loads((pathlib.Path(recording)/'session.json').read_text())
+  state=read_recording_state(recording)
   if state.get('audio_discontinuities',0):raise RuntimeError('Audio discontinuity requires review before further input')
   return health
  try:

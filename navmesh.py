@@ -1,4 +1,8 @@
-"""Read-only single-cell triangle routing; normal input still performs movement."""
+"""Read-only loaded-floor routing; normal input still performs movement.
+
+Join triangles only across matching floor edges, including edges shared by two
+loaded exterior cells. Interior coordinate frames are never combined.
+"""
 import heapq,math,struct
 
 def distance(a,b):return math.dist(a[:2],b[:2])
@@ -17,21 +21,40 @@ def triangle_distance(point,vertices):
 
 class Mesh:
     def __init__(self,observer,cell):
-        array=observer.u32(cell+0x64);data,count=struct.unpack('<II',observer.read(array+4,8))
-        if count!=1:raise RuntimeError('Routing currently requires a single loaded navmesh')
-        mesh=observer.u32(data)
-        if observer.u32(mesh+0x24)!=cell:raise RuntimeError('Navmesh belongs to a different cell')
-        vertices,nv=struct.unpack('<II',observer.read(mesh+0x2C,8))
-        triangles,nt=struct.unpack('<II',observer.read(mesh+0x3C,8))
-        if not 3<=nv<=15000 or not 1<=nt<=20000:raise RuntimeError('Navmesh count outside bounds')
-        self.vertices=list(struct.iter_unpack('<3f',observer.read(vertices,nv*12)))
-        records=list(struct.iter_unpack('<3H3h2H',observer.read(triangles,nt*16)))
-        if any(any(index>=nv for index in row[:3]) or any(n< -1 or n>=nt for n in row[3:6]) for row in records):
-            raise RuntimeError('Unsupported navmesh triangle layout')
-        self.triangles=[tuple(self.vertices[i] for i in row[:3]) for row in records]
-        self.edges=[tuple(n for n in row[3:6] if n>=0) for row in records]
+        self.triangles=[];self.mesh_count=0;self.cell_count=0;seen=set()
+        for parent in observer.loaded_cells(cell):
+            array=observer.u32(parent+0x64)
+            if not array:continue
+            data,count=struct.unpack('<II',observer.read(array+4,8))
+            if not 0<=count<=128:raise RuntimeError('Navmesh array outside bounds')
+            if not count:continue
+            self.cell_count+=1
+            for mesh in struct.unpack('<'+'I'*count,observer.read(data,count*4)):
+                if not mesh or mesh in seen:continue
+                seen.add(mesh)
+                if observer.u32(mesh+0x24)!=parent:raise RuntimeError('Navmesh parent changed')
+                vertices,nv=struct.unpack('<II',observer.read(mesh+0x2C,8))
+                triangles,nt=struct.unpack('<II',observer.read(mesh+0x3C,8))
+                if not 3<=nv<=15000 or not 1<=nt<=20000:raise RuntimeError('Navmesh count outside bounds')
+                points=list(struct.iter_unpack('<3f',observer.read(vertices,nv*12)))
+                records=list(struct.iter_unpack('<3H3h2H',observer.read(triangles,nt*16)))
+                if any(any(index>=nv for index in row[:3]) for row in records):raise RuntimeError('Invalid triangle vertex index')
+                if not all(math.isfinite(v) for point in points for v in point):raise RuntimeError('Invalid navmesh vertex')
+                self.triangles.extend(tuple(points[i] for i in row[:3]) for row in records)
+                self.mesh_count+=1
+        if not self.triangles:raise RuntimeError('No loaded floor triangles')
+        self.edges=[set() for _ in self.triangles];self.portals={};owners={}
+        for index,triangle in enumerate(self.triangles):
+            for a,b in ((0,1),(1,2),(2,0)):
+                # Float precision at exterior coordinates is below this tolerance.
+                key=tuple(sorted(tuple(round(v,1) for v in triangle[k]) for k in (a,b)))
+                owners.setdefault(key,[]).append(index)
+        for edge,linked in owners.items():
+            if len(linked)==2:
+                a,b=linked;self.edges[a].add(b);self.edges[b].add(a)
+                midpoint=tuple((edge[0][k]+edge[1][k])/2 for k in range(3))
+                self.portals[a,b]=midpoint;self.portals[b,a]=midpoint
         self.centers=[tuple(sum(v[k] for v in tri)/3 for k in range(3)) for tri in self.triangles]
-        if not all(math.isfinite(v) for p in self.vertices for v in p):raise RuntimeError('Invalid navmesh vertex')
 
     def nearest(self,point):
         return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+abs(point[2]-self.centers[i][2]),distance(point,self.centers[i])))
@@ -51,6 +74,11 @@ class Mesh:
                     costs[neighbor]=cost;parents[neighbor]=node
                     heapq.heappush(queue,(cost+distance(self.centers[neighbor],self.centers[finish]),neighbor))
         raise RuntimeError('No connected navmesh route to the objective')
+
+    def path_points(self,chain):
+        # Shared-edge midpoints stay on both adjacent floor triangles. Starting
+        # at the next edge avoids backtracking to a centroid whenever an NPC moves.
+        return [self.portals[a,b] for a,b in zip(chain,chain[1:])]+[self.centers[chain[-1]]] if len(chain)>1 else []
 
     def waypoint(self,origin,target):
         chain=self.route(origin,target)

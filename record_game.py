@@ -45,7 +45,7 @@ def main():
     p.add_argument("--game-pid",type=int,required=True)
     p.add_argument("--max-video-kbps",type=int,default=1500)
     p.add_argument("--audio-format",choices=['wav','aac'],default='aac')
-    p.add_argument('--audio-buffer-frames',type=int,default=48000)
+    p.add_argument('--audio-buffer-frames',type=int,default=96000)
     args=p.parse_args()
     if not 500<=args.max_video_kbps<=8000:raise ValueError('Video rate must be 500 to 8000 kbps')
     if not 2048<=args.audio_buffer_frames<=96000:raise ValueError('Audio buffer outside supported bounds')
@@ -74,6 +74,7 @@ def main():
                           stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
     state.update(encoder_pid=proc.pid,video_launch_at=time.time())
     audio=None; audio_proc=None; audio_log=None; audio_writer=None; audio_queue=queue.Queue(maxsize=100); writer_errors=[]; n=0; failure=None
+    monitor=None;monitor_stop=threading.Event();monitor_errors=[]
     try:
         if args.audio_format=='aac':
             audio_log=(folder/'audio-ffmpeg.log').open('wb')
@@ -96,14 +97,23 @@ def main():
         loop=sc.get_microphone(id=speaker.id,include_loopback=True)
         if not loop.isloopback:raise RuntimeError("Refusing a microphone device")
         state["audio_device"]=speaker.name
+        def monitor_capture():
+            # Filesystem checks and JSON publication can briefly block on Windows.
+            # Keep them away from the audio capture thread and its finite buffer.
+            try:
+                while not monitor_stop.wait(.5):
+                    if game_window(args.game_pid,args.title)[0]!=hwnd:raise RuntimeError('The recorded game window changed')
+                    if shutil.disk_usage(folder).free<5*1024**3:raise RuntimeError('Recording stopped at 5GiB free-space reserve')
+                    write_state(folder,state.copy())
+            except BaseException as exc:monitor_errors.append(str(exc))
+        monitor=threading.Thread(target=monitor_capture,daemon=True);monitor.start()
         with loop.recorder(samplerate=48000,channels=[0,1],blocksize=args.audio_buffer_frames) as rec:
             state["audio_started_at"]=time.time()
             while time.time()-started < args.seconds and not (folder/"stop.request").exists():
                 if proc.poll() is not None:raise RuntimeError("Video encoder exited before recording finished")
                 if audio_proc and audio_proc.poll() is not None:raise RuntimeError('Audio encoder exited before recording finished')
                 if writer_errors:raise RuntimeError('Audio pipe failed: '+writer_errors[0])
-                if state['audio_packets']%10==0 and game_window(args.game_pid,args.title)[0]!=hwnd:raise RuntimeError('The recorded game window changed')
-                if shutil.disk_usage(folder).free < 5*1024**3:raise RuntimeError("Recording stopped at 5GiB free-space reserve")
+                if monitor_errors:raise RuntimeError('Capture monitor failed: '+monitor_errors[0])
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter('always')
                     samples=rec.record(numframes=4800)
@@ -125,12 +135,15 @@ def main():
                 state["audio_frames"]+=len(samples);state["audio_packets"]+=1
                 state["audio_peak"]=max(state["audio_peak"],float(np.abs(samples).max()))
                 state.update(state="recording",last_update=time.time())
-                if state["audio_packets"]%10==0:write_state(folder,state)
             state["stop_reason"]="stop_requested" if (folder/"stop.request").exists() else "duration_limit"
     except BaseException as exc:
         failure=f"{type(exc).__name__}: {exc}"
         state.update(state="failed",error=failure)
     finally:
+        monitor_stop.set()
+        if monitor:
+            monitor.join(timeout=10)
+            if monitor.is_alive():failure=failure or 'Capture monitor did not stop'
         if audio:audio.close()
         state["audio_finalized"]=audio is not None
         if audio_proc:

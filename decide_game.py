@@ -4,9 +4,18 @@ from observe_game import Observer
 from jev_bridge import decide,commentary
 ROOT=pathlib.Path(__file__).resolve().parent
 
+def read_recording_state(folder):
+    # Windows can briefly deny access while another process replaces the file.
+    # Retry only this read, never any gameplay input or model request.
+    for attempt in range(5):
+        try:return json.loads((pathlib.Path(folder)/'session.json').read_text())
+        except PermissionError:
+            if attempt==4:raise
+            time.sleep(.025)
+
 def recording_health(folder):
     folder=pathlib.Path(folder)
-    state=json.loads((folder/'session.json').read_text())
+    state=read_recording_state(folder)
     with (folder/'progress.txt').open('rb') as f:
         f.seek(0,2);size=f.tell();f.seek(max(0,size-4096))
         progress=f.read().decode('ascii',errors='ignore')

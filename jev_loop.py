@@ -1,4 +1,4 @@
-"""Continuous Jev decisions with normal inputs and failure-triggered supervision."""
+"""Continuous Jev decisions with normal inputs and asynchronous Astra planning."""
 import argparse, hashlib, json, pathlib, time, uuid
 from observe_game import Observer
 from decide_game import recording_health
@@ -13,6 +13,15 @@ def controls(state):
     if messages:
         labels = messages[0]['labels']
         return sorted([x for x in labels if x.get('target')], key=lambda x: (x['y'], x['x'])), list(dict.fromkeys(x['text'] for x in labels))
+    tutorials=[m for m in state['menus'] if m['name']=='tutorial' and any(x.get('target') and x['text']=='Close' for x in m['labels'])]
+    if tutorials:
+        labels=tutorials[0]['labels']
+        return [x for x in labels if x.get('target') and x['text']=='Close'],list(dict.fromkeys(x['text'] for x in labels))
+    locks=[m for m in state['menus'] if m['name']=='lockpick']
+    if locks:
+        labels=locks[0]['labels']
+        # Lockpicking is not implemented; exiting preserves pins and the lock.
+        return [x for x in labels if x.get('target') and x['text']=='Exit'],list(dict.fromkeys(x['text'] for x in labels))
     appearance = [m for m in state['menus'] if m['name'] == 'appearance' and m['labels']]
     if appearance:
         labels = appearance[0]['labels']
@@ -63,7 +72,7 @@ def run(pid, recording, seconds, world_enabled=False):
         world_controller=WorldController()
     status = {'state': 'running', 'pid': pid, 'recording': str(recording),
               'started_at': time.time(), 'decisions': 0, 'inputs': 0,
-              'controller_scope': 'Jev chooses dialogue, targets, routes, normal controls and recovery; Astra handles persistent failures and missing interfaces'}
+              'controller_scope': 'Jev chooses useful gameplay actions; Astra proactively improves planning, interfaces and reliability'}
     repeated, previous, idle_since = 0, None, None
     recent_menus=[]
     try:
@@ -94,7 +103,7 @@ def run(pid, recording, seconds, world_enabled=False):
                     status.update(state='needs_planner',reason=result['handoff']);break
                 write_status(status);time.sleep(.15);continue
             non_start = [m['name'] for m in state['menus']
-                         if m['name'] not in ('hud', 'loading', 'start', 'message', 'appearance','dialogue','chargen','traits','traitselect') and m['labels']
+                         if m['name'] not in ('hud', 'loading', 'start', 'message', 'appearance','dialogue','chargen','traits','traitselect','tutorial','lockpick') and m['labels']
                          and not (m['name'] == 'textedit' and any(x['text'] == 'Enter character name.' for x in m['labels']))]
             idle_limit=120 if any(m['name']=='dialogue' for m in state['menus']) else 30
             if non_start or ((state.get('player') or {}).get('cell_id') and not items
@@ -114,8 +123,9 @@ def run(pid, recording, seconds, world_enabled=False):
             campaign_loaded=bool((state.get('player') or {}).get('cell_id'))
             options = {str(i): x['text'] for i, x in enumerate(items)
                        if '/main_container/' not in x['path'] or x['text']==('Continue' if campaign_loaded else 'New')}
-            options['wait'] = 'Wait one second for a scene or prompt to advance'
-            options['assist'] = 'Ask Astra when this menu needs a missing control or recovery has failed'
+            if not any(m['name']=='message' for m in state['menus']):
+                options['wait'] = 'Wait one second for a scene or prompt to advance'
+            options['assist'] = 'Ask Astra for planning, a missing control or recovery when helpful'
             compact = {'objective': 'Finish the fresh recorded Fallout: New Vegas main story. You own dialogue, character build and gameplay choices. Choose a coherent approach and adapt from results. Preserve this campaign and never load pre-existing saves.',
                        'visible_menu': texts, 'recording_verified': True,
                        'current_campaign_paused':bool(world_enabled and (state.get('player') or {}).get('cell_id')),
@@ -153,7 +163,9 @@ def run(pid, recording, seconds, world_enabled=False):
                 selected = next((x for x in current if x['tile'] == chosen['tile']), None)
                 if selected is None:
                     raise RuntimeError('Jev-selected menu item disappeared')
-                if selected['highlighted'] or selected['path'].startswith(('/TextEditMenu/','/CharGenMenu/')) or (trait_menu and '/LUM_ButtonRect/' in selected['path']):
+                if selected['path'].startswith(('/TutorialMenu/','/LockPickMenu/')):
+                    key='e'  # Observed PCShortcutLabel on Close/Exit.
+                elif selected['highlighted'] or selected['path'].startswith(('/TextEditMenu/','/CharGenMenu/')) or (trait_menu and '/LUM_ButtonRect/' in selected['path']):
                     key = 'e' if '/StartMenu/' in selected['path'] and '/confirm_container/' in selected['path'] else 'enter'
                 else:
                     highlighted = next((x for x in current if x['highlighted']), None)
@@ -162,7 +174,7 @@ def run(pid, recording, seconds, world_enabled=False):
                     else:
                         key = 'up' if highlighted and highlighted['y'] > selected['y'] else 'down'
                 activating = key in ('enter', 'e')
-                dialogue_click=activating and selected['path'].startswith(('/DialogMenu/','/CharGenMenu/','/TraitMenu/'))
+                dialogue_click=activating and selected['path'].startswith(('/DialogMenu/','/CharGenMenu/','/TraitMenu/','/MessageMenu/'))
                 if dialogue_click:
                     # The tested 1280x720 client uses a 4:3 virtual UI scale of .75.
                     if health.get('source_size')!=[1280,720]:raise RuntimeError('Dialogue click scale not validated for this size')

@@ -35,16 +35,24 @@ class WorldController:
         targets={}
         for obj in world['objectives']:
             for row in obj['targets']:
-                if row['same_cell']:targets[row['ref_id']]=dict(row,quest_target=True)
+                if row['same_space'] and row['loaded']:targets[row['ref_id']]=dict(row,quest_target=True)
+        entrances=world.get('travel_targets',[])
+        unlocked=[row for row in entrances if not row.get('locked')]
+        for row in unlocked or entrances:
+            targets[row['ref_id']]=dict(row,name=('Locked door to ' if row.get('locked') else 'Door to ')+(row['destination']['cell_name'] or 'the exterior'),quest_target=True)
+        # Nearby gates can block a route to a more distant quest entrance.
+        for row in world['nearby']:
+            if row['kind']==28 and row['distance']<250 and not row.get('locked'):
+                targets.setdefault(row['ref_id'],dict(row,quest_target=False))
         objective_text=' '.join(o['text'] for o in world['objectives']).lower()
         named=[row for row in world['nearby'] if row['name'].lower() in objective_text]
         for row in named:
-            if row['same_cell']:targets[row['ref_id']]=dict(row,quest_target=True)
+            if row['same_space'] and row['loaded']:targets[row['ref_id']]=dict(row,quest_target=True)
         # Prefer current objectives over unrelated furniture. Generic actors and
         # doors remain available when the game supplies no actionable target.
         candidates=named if targets else sorted(world['nearby'],key=lambda r:(r['kind'] not in (28,42,43),r['distance']))
         for row in candidates:
-            if row['same_cell'] and row['ref_id'] not in targets and len(targets)<16:
+            if row['same_space'] and row['loaded'] and row['ref_id'] not in targets and len(targets)<16:
                 targets[row['ref_id']]=dict(row,quest_target=False)
         return targets
 
@@ -56,7 +64,7 @@ class WorldController:
             try:
                 player=observer.u32(0x11DEA3C)
                 self.mesh=Mesh(observer,observer.u32(player+0x40))
-                self.routing_note='Local floor mesh available; manual movement and direct route also available.'
+                self.routing_note=f'Connected floor geometry loaded from {self.mesh.mesh_count} meshes in {self.mesh.cell_count} cells; manual and direct movement also available.'
             except (OSError,ValueError,RuntimeError) as exc:
                 self.routing_note='Floor route unavailable; direct steering and manual movement remain available: '+str(exc)
 
@@ -68,11 +76,13 @@ class WorldController:
         if self.route_for!=key:
             try:
                 chain=self.mesh.route(state['player']['position'],target['position'])
-                self.route_points=[self.mesh.centers[i] for i in chain] if len(chain)>1 else []
+                self.route_points=self.mesh.path_points(chain)
                 self.route_for=key
             except (OSError,ValueError,RuntimeError):
                 self.route_points=[];self.route_for=key
-        while self.route_points and distance(state['player']['position'],self.route_points[0])<30:
+        # Arrival must exceed the movement stopping distance (20+15 units),
+        # otherwise a waypoint 30-35 units away produces endless empty inputs.
+        while self.route_points and distance(state['player']['position'],self.route_points[0])<45:
             self.route_points.pop(0)
         return self.route_points[0] if self.route_points else None
 
@@ -91,11 +101,11 @@ class WorldController:
             'save':'Quicksave the current campaign in its isolated save folder.',
             'wait':'Do nothing for one second.',
             'wait_long':'Do nothing for five seconds.',
-            'assist':'Ask Astra for help only if recovery options are exhausted or a control is missing.'}
+            'assist':'Ask Astra for planning or an interface improvement when it would speed reliable progress.'}
         for ident,target in targets.items():
             name=target['name']
             options['face:'+ident]='Face/aim at '+name+'.'
-            options['route:'+ident]='Follow the floor route toward '+name+' for up to3seconds, steering around obstacles.'
+            options['route:'+ident]='Navigate toward '+name+' for up to3seconds; use a connected floor route when available, otherwise direct steering.'
             options['direct:'+ident]='Take ONE turn or short step directly toward '+name+' without obstacle routing.'
         disabled=world['disabled_controls']
         unavailable={'movement':('forward','backward','left','right','forward_left','forward_right','jump'),
@@ -140,18 +150,20 @@ class WorldController:
             self.planner.request_help(state,world,'No observed progress for75seconds')
             return {'handoff':'Jev tried recovery but the observed state has not advanced for 75 seconds.','world':world}
         compact={
-            'objective':'Finish this fresh Fallout: New Vegas main-story campaign. You control gameplay decisions, targets, routes, dialogue, build and recoveries. Astra assists on persistent failures or missing interfaces.',
+            'objective':'Finish this fresh Fallout: New Vegas main-story campaign as quickly and reliably as possible. Choose useful gameplay actions. Astra provides proactive planning, better skills and recovery when helpful.',
             'execution_contract':'Every previous action has FINISHED. No background movement is running. A floor route executes normal steering and movement for up to3seconds. Direct/manual actions execute one short step. Continue or change your action as needed. Waiting sends no inputs.',
             'floor_route_available':self.mesh is not None,
             'cell':state['player']['cell_name'],'position':[round(x,1) for x in state['player']['position']],
             'view':{key:round(value,3) for key,value in view(state,world).items() if key!='unused'},
             'quest':world['quest'],'objectives':list(sig),
+            'journal':world.get('journal',[]),
             'seconds_on_current_objective':round(now-self.objective_since,1),
             'seconds_without_player_or_menu_change':round(now-self.no_change_since,1),
             'nearby':[{'id':t['ref_id'],'name':t['name'],'kind':{21:'activator',28:'door',39:'furniture',42:'NPC',43:'creature'}.get(t['kind']),
                        'distance':t['distance'],'turn_radians':t['heading_error'],'quest_target':t['quest_target'],
+                       'locked':t.get('locked',False),
                        'target_moved_since_last_decision':round(math.dist(t['position'],self.last_targets[t['ref_id']]),1) if t['ref_id'] in self.last_targets else None} for t in targets.values()],
-            'crosshair':world['crosshair']['name'] if world['crosshair'] else None,
+            'crosshair':{key:world['crosshair'].get(key) for key in ('name','ref_id','locked','destination')} if world['crosshair'] else None,
             'movement_available':not world['disabled_controls']['movement'],
             'controls_available':[name for name,disabled in world['disabled_controls'].items() if not disabled],
             'controls_disabled_by_game':[name for name,disabled in world['disabled_controls'].items() if disabled],
@@ -203,6 +215,7 @@ class WorldController:
         else:
             keys={'activate':'e','jump':'space','sneak':'ctrl','point_of_view':'f','pipboy':'tab','reload':'r','holster':'r','save':'f5'}
             kwargs.update(keys=[keys[choice]],seconds=.9 if choice=='holster' else .15)
+            if choice=='activate':self.mesh_cell=None
         input_count=0;route_until=time.monotonic()+3
         if executed:
             act(pid,recording,request_id=ident,actor='Jev',stop_when=lambda observed: observed.get('interface_mode')!=1,**kwargs)
