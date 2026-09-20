@@ -75,6 +75,7 @@ def run(pid, recording, seconds, world_enabled=False):
                 raise RuntimeError('Game lost foreground; stopped without stealing focus')
             state = observer.snapshot()
             if world_enabled and any(m['name']=='vigor' for m in state['menus']):
+                idle_since=None
                 from vigor_controller import step as vigor_step
                 result=vigor_step(observer,client,pid,recording)
                 status.update(phase='attribute_menu',last_world_result=result)
@@ -84,18 +85,20 @@ def run(pid, recording, seconds, world_enabled=False):
                 write_status(status);time.sleep(.2);continue
             items, texts = controls(state)
             if world_enabled and not items and state.get('player') and state['player'].get('cell_name') and state.get('interface_mode')==1 and all(m['name'] in ('hud','tutorial') for m in state['menus']):
+                idle_since=None
                 result=world_controller.step(observer,client,pid,recording,state)
                 status.update(phase='autonomous_world_choices',last_world_result=result)
                 if result.get('choice'):
-                    status['decisions']+=1;status['inputs']+=int(result.get('input_sent',True))
+                    status['decisions']+=1;status['inputs']+=result.get('input_count',int(result.get('input_sent',True)))
                 if result.get('handoff'):
                     status.update(state='needs_planner',reason=result['handoff']);break
                 write_status(status);time.sleep(.15);continue
             non_start = [m['name'] for m in state['menus']
                          if m['name'] not in ('hud', 'loading', 'start', 'message', 'appearance','dialogue','chargen','traits','traitselect') and m['labels']
                          and not (m['name'] == 'textedit' and any(x['text'] == 'Enter character name.' for x in m['labels']))]
+            idle_limit=120 if any(m['name']=='dialogue' for m in state['menus']) else 30
             if non_start or (state.get('player', {}).get('cell_name') and not items
-                             and idle_since is not None and time.time() - idle_since > 30):
+                             and idle_since is not None and time.time() - idle_since > idle_limit):
                 status.update(state='needs_planner', reason='New state needs controller support',
                               menus=non_start, observation=state)
                 break

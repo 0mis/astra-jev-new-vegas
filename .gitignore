@@ -16,6 +16,7 @@ recording-pilot-*/
 *.bak
 original-save*/
 nvse-reference/
+reference-minecraft/
 latest-*.json
 decisions.jsonl
 actions.jsonl
@@ -35,6 +36,10 @@ public-export.json
 *.aac
 world-decisions.jsonl
 world-results.jsonl
+planner-advice.json
+planner-observation.json
+planner-request.json
+planner-*.next.json
 vigor-decisions.jsonl
 safety-events.jsonl
 mouse-calibration.json
