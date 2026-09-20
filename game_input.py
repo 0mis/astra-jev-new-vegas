@@ -58,7 +58,7 @@ def pause_world(pid):
   state=observer.snapshot()
   names={menu['name'] for menu in state['menus']}
   if 'start' not in names:
-   if names-{'hud','tutorial'} or not (state.get('player') or {}).get('cell_name'):
+   if names-{'hud','tutorial'} or not (state.get('player') or {}).get('cell_id'):
     raise RuntimeError('Unknown menu or cinematic state; no blind Escape')
    try:
     send(key_event('escape'));time.sleep(.1)

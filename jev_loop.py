@@ -84,7 +84,7 @@ def run(pid, recording, seconds, world_enabled=False):
                 if result.get('choice'):status['decisions']+=1;status['inputs']+=1
                 write_status(status);time.sleep(.2);continue
             items, texts = controls(state)
-            if world_enabled and not items and state.get('player') and state['player'].get('cell_name') and state.get('interface_mode')==1 and all(m['name'] in ('hud','tutorial') for m in state['menus']):
+            if world_enabled and not items and state.get('player') and state['player'].get('cell_id') and state.get('interface_mode')==1 and all(m['name'] in ('hud','tutorial') for m in state['menus']):
                 idle_since=None
                 result=world_controller.step(observer,client,pid,recording,state)
                 status.update(phase='autonomous_world_choices',last_world_result=result)
@@ -97,7 +97,7 @@ def run(pid, recording, seconds, world_enabled=False):
                          if m['name'] not in ('hud', 'loading', 'start', 'message', 'appearance','dialogue','chargen','traits','traitselect') and m['labels']
                          and not (m['name'] == 'textedit' and any(x['text'] == 'Enter character name.' for x in m['labels']))]
             idle_limit=120 if any(m['name']=='dialogue' for m in state['menus']) else 30
-            if non_start or (state.get('player', {}).get('cell_name') and not items
+            if non_start or ((state.get('player') or {}).get('cell_id') and not items
                              and idle_since is not None and time.time() - idle_since > idle_limit):
                 status.update(state='needs_planner', reason='New state needs controller support',
                               menus=non_start, observation=state)
@@ -111,14 +111,14 @@ def run(pid, recording, seconds, world_enabled=False):
             repeated = repeated + 1 if sig == previous else 0
             if repeated >= 6:
                 raise RuntimeError('Repeated unchanged menu; stopped for inspection')
-            campaign_loaded=bool((state.get('player') or {}).get('cell_name'))
+            campaign_loaded=bool((state.get('player') or {}).get('cell_id'))
             options = {str(i): x['text'] for i, x in enumerate(items)
                        if '/main_container/' not in x['path'] or x['text']==('Continue' if campaign_loaded else 'New')}
             options['wait'] = 'Wait one second for a scene or prompt to advance'
             options['assist'] = 'Ask Astra when this menu needs a missing control or recovery has failed'
             compact = {'objective': 'Finish the fresh recorded Fallout: New Vegas main story. You own dialogue, character build and gameplay choices. Choose a coherent approach and adapt from results. Preserve this campaign and never load pre-existing saves.',
                        'visible_menu': texts, 'recording_verified': True,
-                       'current_campaign_paused':bool(world_enabled and (state.get('player') or {}).get('cell_name')),
+                       'current_campaign_paused':bool(world_enabled and (state.get('player') or {}).get('cell_id')),
                        'recent_menu_results':recent_menus[-8:],
                        'existing_saves_backed_up': True, 'separate_save_path_configured': True}
             requested_at = time.time()

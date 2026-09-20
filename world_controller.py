@@ -219,7 +219,15 @@ class WorldController:
                 route_kwargs['seconds']=min(route_kwargs['seconds'],max(.05,route_until-time.monotonic()))
                 act(pid,recording,request_id=ident+':'+str(substep),actor='Jev',stop_when=lambda observed: observed.get('interface_mode')!=1,**route_kwargs)
                 input_count+=1
-        after=observer.snapshot();after_world=observer.world(after)
+        after=observer.snapshot()
+        if after.get('interface_mode')!=1 or not after.get('player') or after['player'].get('cell_id')!=fresh['player']['cell_id']:
+            result={'action':options[choice],'changed':True,'input_sent':executed,'transition':True,
+                    'menus':[m['name'] for m in after['menus']]}
+            self.history.append(result);self.no_change_since=time.monotonic();self.no_change_count=0
+            with (ROOT/'world-results.jsonl').open('a',encoding='utf-8') as output:
+                output.write(json.dumps({'at':time.time(),'request_id':ident,'choice':choice,**result})+'\n')
+            return {'choice':choice,'input_sent':executed,'input_count':input_count,'result':result,'latency_seconds':answer['latency_seconds']}
+        after_world=observer.world(after)
         moved=math.dist(fresh['player']['position'],after['player']['position'])
         before_view=view(fresh,current);after_view=view(after,after_world)
         turned=abs(angle(after_view['yaw']-before_view['yaw']))+abs(after_view['pitch']-before_view['pitch'])
