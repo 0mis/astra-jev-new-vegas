@@ -78,6 +78,15 @@ class Observer:
      out["player"]={"position":pos,"rotation_radians":rot,"ref_id":hex(self.u32(player+0xC)),
        "cell_id":hex(self.u32(cell+0xC)) if cell else None,
        "cell_name":self.string(self.u32(cell+0x1C)) if cell else None}
+     out['player']['in_combat']=bool(self.read(player+0x104,1)[0])
+     out['player']['life_state']=self.u32(player+0x108)
+     out['player']['sit_sleep_state']=self.u32(player+0x1AC)
+     process=self.u32(player+0x68)
+     if process and self.u32(process+0x28)<=1:
+      out['player']['weapon_drawn']=bool(self.read(process+0x135,1)[0])
+      ammo=self.u32(process+0x118)
+      count=self.u32(ammo+4) if ammo else None
+      if count is not None and count<=100000:out['player']['loaded_ammunition']=count
    except (OSError,ValueError):out["player"]=None
   base=self.u32(0x11F350C);menus=[]
   out['interface_mode']=self.u32(self.u32(0x11D8A80)+0xC)
