@@ -23,3 +23,11 @@ commentary.jsonl
 jev-usage.jsonl
 jev-smoke-test.json
 request.json
+*.lock
+*.stop
+loop-status*.json
+loop-decisions.jsonl
+jev-latency-pilot.json
+*.before-*
+STATE.md
+public-export.json

@@ -61,7 +61,8 @@ class Observer:
   for ident,val in v.items():
    if isinstance(val,str) and val.strip() and ident==0xFC4:
     found.append({"path":path,"text":val,"x":round(x,2),"y":round(y,2),
-                  "width":v.get(0xFB1),"height":v.get(0xFB0),"tile":hex(p)})
+                  "width":v.get(0xFB1),"height":v.get(0xFB0),"tile":hex(p),
+                  "target":v.get(0xFAF,0),"highlighted":bool(v.get(0xFC3,0))})
   try:
    for child in self.linked(p+4,1024):
     found.extend(self.walk(self.u32(child+8),path,x,y,seen,depth+1))

@@ -7,7 +7,9 @@ ROOT=pathlib.Path(__file__).resolve().parent
 def recording_health(folder):
     folder=pathlib.Path(folder)
     state=json.loads((folder/'session.json').read_text())
-    progress=(folder/'progress.txt').read_text()
+    with (folder/'progress.txt').open('rb') as f:
+        f.seek(0,2);size=f.tell();f.seek(max(0,size-4096))
+        progress=f.read().decode('ascii',errors='ignore')
     frames=[int(line.split('=',1)[1]) for line in progress.splitlines() if line.startswith('frame=')]
     if (state['state']!='recording' or time.time()-state['last_update']>4 or
         state['audio_frames']<=0 or len(frames)<2 or frames[-1]<=frames[-2] or

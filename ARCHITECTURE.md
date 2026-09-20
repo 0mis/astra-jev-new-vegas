@@ -10,7 +10,7 @@ Game -> read-only observations -> Jev typed action choice -> guarded normal inpu
 Recorder health ----------------> gate every gameplay action
 ```
 
-The repository currently implements the observation, decision and recording components. The arrow from a decision to reliable game input remains under development.
+The repository implements observation, decision, recording and bounded normal input. The continuous loop has executed Jev's opening notification and character-name choices in the live game. It supports only those opening menus and the main-menu confirmation, and deliberately yields unfamiliar states to the planner. Full gameplay control remains under development.
 
 ## Observation limits
 
@@ -22,7 +22,9 @@ Menu labels were checked against the visible main menu. Tile x/y values are virt
 
 The planner supplies an objective, observed context, allowed choices and instructions. Jev returns one Choice value with confidence and usage. Confidence is not proof that the action is correct. The executor should accept only known choices, reject stale observations, check expected menus and recording health, and log the request identity before sending input.
 
-An uncertain action should trigger a new observation, not a blind retry. A later executor must enforce one owner, bounded key holds, release keys on failure, and verify the game remains foreground. It must never send game controls to another application.
+An uncertain action triggers fresh observation, not a blind retry. The input executor uses an exclusive lock, bounded holds, key release on failure, foreground checks and recording gates. The menu loop rejects stale replies and changed control sets and stops if activation fails to change the menu. Separate API-client ownership prevents simultaneous budget-ledger writers. Individual action IDs are logged, but the executor does not yet implement durable duplicate-ID rejection; a caller must not replay uncertain requests.
+
+Jev chooses a menu item from fresh observed alternatives. Code performs the mechanical key navigation to that exact item and releases the activation key when the visible menu changes. No Astra approval is required between supported menu choices. No game simulation pause or time stepping is used. Code currently hands appearance and world navigation back to Astra because those controls are unfinished, rather than pretending Jev can act on unsupported observations.
 
 ## Recording contract
 

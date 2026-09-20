@@ -6,14 +6,16 @@ The intended division is simple: Typesafe Jev chooses frequent actions from fres
 
 ## What works so far
 
-- A live `jev-1.13.0` API call completed in 0.596 seconds and selected the correct recording prerequisite. A later main-menu decision took 0.619 seconds. These are individual measurements, not throughput benchmarks.
+- A persistent HTTPS client reduced repeated menu-prerequisite decisions to a 193.5 ms warm median across five warm calls (229.9 ms maximum), following a 505.5 ms cold call. All six chose the correct recording prerequisite. This measures decision latency, not gameplay throughput.
 - The read-only observer returned player and menu data in approximately 22–25 ms on the test machine.
 - A 20-second recording pilot produced 604 frames of decoded 1280×720 video at 30 fps, 960,000 stereo audio samples per channel, nonzero sound, and clean finalization.
 - Existing saves were backed up before setup.
+- A fresh recorded campaign has started in Doc Mitchell's house. Jev selected New/Yes; Astra repaired the confirmation key mapping. The continuous menu loop subsequently dismissed the opening notifications and accepted the default Courier name automatically, then handed the unfamiliar appearance screen to the planner.
+- Normal timed keyboard input has foreground, recording, audio-warning, single-owner and stop-file guards. It releases keys on failure and can release as soon as an observed menu changes.
 
 ## What is still unfinished
 
-- Reliable game input and the closed-loop gameplay controller. The initial desktop input test did not activate New Game. There is **no verified autonomous game-playing loop** yet.
+- Full gameplay control: the existing continuous loop handles a small set of opening menus only. It also advanced the default appearance pages through DONE, but the final character confirmation still needs input calibration. Navigation, combat and most later menus remain unfinished. The campaign is not complete.
 - Correct screen-coordinate conversion, map/navigation observations, gameplay safeguards, and recovery tests.
 - A complete campaign and verified ending, edited video, YouTube/X publication.
 - Recording reliability over a whole campaign. A longer setup capture reported an audio discontinuity; the recorder now logs these warnings explicitly. Inspect them before accepting a recording as complete.
@@ -52,9 +54,14 @@ Use a windowed game with the exact title `Fallout: New Vegas`. Keep other applic
 
 # In another terminal, after verifying the recording:
 .\invoke_jev.ps1 -GamePid GAME_PID -RequestFile .\request.example.json -RecordingFolder .\recordings\run-001
+
+# Limited automatic opening-menu controller; do not run alongside another controller.
+.\start_jev_loop.ps1 -GamePid GAME_PID -RecordingFolder .\recordings\run-001 -Seconds 300
 ```
 
-The decision command reads fresh game state and recording counters, calls Jev once, and records the answer. **It does not send game input.** An executor must independently validate freshness, expected state, and capture health before applying any choice.
+The single-decision command does not send input. The separate `start_jev_loop.ps1` command does execute Jev's selected opening-menu actions through bounded normal keyboard input, verifies expected state, and stops on unsupported states. Read `loop-status.json` before resuming. Create `controller.stop` beside the scripts to request a stop; remove it manually only when you intend to resume. This does not pause the game's simulation or stop the recorder.
+
+For the tested configuration, the new-game confirmation used E, while informational messages and the character-name screen used Enter. Cursor conversion and relative mouse behavior still require validation. The game launcher can regenerate Fallout.ini; recheck a separate save path before a run and protect existing saves independently. Disabling controller mode used `bDisable360Controller=1` in the Interface section; this is a local configuration finding, not a universal input fix.
 
 To stop a recorder cleanly, create an empty `stop.request` file inside its session directory. Wait for `session.json` to report `stopped`, `audio_finalized: true`, and `video_exit_code: 0`. Do not assume those values prove there were no capture gaps; review frame progress, audio warnings, actual decoded content and durations too.
 
@@ -67,6 +74,9 @@ Video is segmented H.264/MKV; audio is separate 48 kHz stereo PCM/WAV. Audio use
 - `decide_game.py`: recording gate plus one observed decision and an execution handoff record.
 - `invoke_jev.ps1`: optional local DPAPI credential loader.
 - `record_game.py`: segmented capture and health/finalization metadata.
+- `game_input.py`: guarded normal timed keyboard and relative mouse input.
+- `jev_loop.py` and `start_jev_loop.ps1`: limited continuous opening-menu controller and local credential loader.
+- `benchmark_jev.py`: six read-only main-menu decision samples; pass `--pid GAME_PID`.
 - `request.example.json`: an example objective and legal action choices.
 - `ARCHITECTURE.md`: intended controller contract and current limitations.
 - `THIRD_PARTY.md`: external services and layout references.

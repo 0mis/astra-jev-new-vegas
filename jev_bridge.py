@@ -1,35 +1,67 @@
 """Bounded Jev decision client. Credentials are read only from the environment."""
-import json, os, time, urllib.request, pathlib, datetime
+import json, os, time, http.client, pathlib, datetime,math,msvcrt
 ROOT = pathlib.Path(__file__).resolve().parent
 LEDGER = ROOT / "jev-usage.jsonl"
 PRICE = 0.042 / 1_000_000
 CAP = 1.0
 
+class JevClient:
+    """One persistent TLS connection and one owner of the conservative cost ledger."""
+    def __init__(self,timeout=5):
+        self.key=os.environ.get('TYPESAFE_API_KEY')
+        if not self.key:raise RuntimeError('No authorized TypeSafe credential in this process')
+        self.lock=(ROOT/'jev-client.lock').open('a+b');self.lock.seek(0)
+        if not self.lock.read(1):self.lock.write(b'0');self.lock.flush()
+        self.lock.seek(0);msvcrt.locking(self.lock.fileno(),msvcrt.LK_NBLCK,1)
+        previous=[json.loads(s) for s in LEDGER.read_text().splitlines()] if LEDGER.exists() else []
+        self.spent=sum(x.get('reserved_usd',0) for x in previous)
+        self.connection=http.client.HTTPSConnection('api.typesafe.ai',timeout=timeout)
+    def close(self):
+        self.connection.close()
+        if not self.lock.closed:
+            self.lock.seek(0);msvcrt.locking(self.lock.fileno(),msvcrt.LK_UNLCK,1);self.lock.close()
+        self.key=None
+    def request(self,state,questions):
+        body=json.dumps({'model':'jev-1.13.0','state':state,'questions':questions},separators=(',',':')).encode()
+        reserved=(len(body)*2+4096)*PRICE
+        if self.spent+reserved>CAP:raise RuntimeError('Conservative $1 test budget reached')
+        row={'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             'reserved_usd':reserved,'request_bytes':len(body)}
+        with LEDGER.open('a',encoding='utf-8') as f:f.write(json.dumps(row)+'\n')
+        self.spent+=reserved
+        started=time.perf_counter()
+        try:
+            self.connection.request('POST','/v1/systemone',body=body,
+                headers={'Authorization':'Bearer '+self.key,'Content-Type':'application/json'})
+            response=self.connection.getresponse();raw=response.read()
+            if response.status!=200:raise RuntimeError(f'TypeSafe HTTP {response.status}; no automatic retry')
+            data=json.loads(raw)
+        except BaseException:
+            self.connection.close()
+            raise
+        elapsed=time.perf_counter()-started
+        if set(data['answers'])!=set(questions):raise RuntimeError('Unexpected answer keys')
+        for name,question in questions.items():
+            answer=data['answers'][name]
+            if question['type']=='choice':
+                if answer['choice'] not in question['criteria']:raise RuntimeError('Response outside permitted choices')
+                confidence=answer['confidence']
+                if not isinstance(confidence,(int,float)) or not math.isfinite(confidence) or not 0<=confidence<=1:
+                    raise RuntimeError('Invalid confidence')
+        result={'answers':data['answers'],'latency_seconds':round(elapsed,4),'usage':data.get('usage'),
+                'model':data['model'],'estimated_usd':data.get('usage',{}).get('input_tokens',0)*PRICE}
+        with LEDGER.open('a',encoding='utf-8') as f:
+            f.write(json.dumps({'at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'usage':result['usage'],'estimated_usd':result['estimated_usd'],'latency_seconds':result['latency_seconds']})+'\n')
+        return result
+
+_client=None
 def decide(state, options, instructions):
-    if not os.environ.get("TYPESAFE_API_KEY"):
-        raise RuntimeError("No authorized TypeSafe credential in this process")
-    # This single-owner client deliberately has no automatic retries after uncertain calls.
-    previous = [json.loads(s) for s in LEDGER.read_text().splitlines()] if LEDGER.exists() else []
-    spent = sum(x.get("reserved_usd", 0) for x in previous)
-    body = json.dumps({"model":"jev-1.13.0", "state":state, "questions":{
-        "action":{"type":"choice","instructions":instructions,"criteria":options}
-    }}).encode()
-    reserved = (len(body) * 2 + 4096) * PRICE
-    if spent + reserved > CAP:
-        raise RuntimeError("Conservative $1 test budget reached")
-    row={"at_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
-         "reserved_usd":reserved,"request_bytes":len(body)}
-    with LEDGER.open("a",encoding="utf-8") as f: f.write(json.dumps(row)+"\n")
-    req=urllib.request.Request("https://api.typesafe.ai/v1/systemone",data=body,
-        headers={"Authorization":"Bearer "+os.environ["TYPESAFE_API_KEY"],"Content-Type":"application/json"})
-    started=time.perf_counter()
-    with urllib.request.urlopen(req,timeout=30) as r: data=json.load(r)
-    elapsed=time.perf_counter()-started
-    answer=data["answers"]["action"]
-    if answer["choice"] not in options: raise RuntimeError("Response outside permitted choices")
-    return {"choice":answer["choice"],"confidence":answer["confidence"],
-            "latency_seconds":round(elapsed,4),"usage":data.get("usage"),
-            "model":data["model"],"estimated_usd":data.get("usage",{}).get("input_tokens",0)*PRICE}
+    global _client
+    if _client is None:_client=JevClient()
+    result=_client.request(state,{'action':{'type':'choice','instructions':instructions,'criteria':options}})
+    answer=result.pop('answers')['action']
+    return dict(result,choice=answer['choice'],confidence=answer['confidence'],probabilities=answer.get('probabilities'))
 
 def commentary(speaker, text, kind="public_gameplay_update"):
     event={"at_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
