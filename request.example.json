@@ -1,0 +1,10 @@
+{
+  "objective": "Begin a fresh Fallout: New Vegas main-story campaign and preserve continuous recording.",
+  "context": "The game is at its main menu. Video and audio recording were tested, and current capture is healthy. Existing saves were backed up. We need a new game for this recorded run.",
+  "options": {
+    "new_game": "Select New to start a fresh campaign",
+    "continue": "Continue an existing player's save",
+    "wait": "Wait if recording or game state is not ready"
+  },
+  "instructions": "Choose the next legal menu action that advances the objective. Use only observed facts. Do not use a pre-existing playthrough."
+}
