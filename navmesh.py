@@ -19,6 +19,39 @@ def triangle_distance(point,vertices):
         distances.append(math.hypot(point[0]-u[0]-fraction*dx,point[1]-u[1]-fraction*dy))
     return min(distances)
 
+def corridor_visible(a,b,triangles):
+    """Require complete segment coverage by the floor corridor, including height.
+
+    Clip the segment against each triangle's half-planes and floor-height band.
+    The union of covered intervals must have no gap; walls and missing floor
+    therefore prevent a shortcut. This does not model dynamic obstacles.
+    """
+    def cross(u,v,p):return (v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0])
+    intervals=[]
+    for triangle in triangles:
+        u,v,w=triangle;area=cross(u,v,w)
+        if abs(area)<1e-5:continue
+        sign=1 if area>0 else -1
+        constraints=[(sign*cross(p,q,a),sign*cross(p,q,b)) for p,q in ((u,v),(v,w),(w,u))]
+        def height(p):return u[2]+cross(u,v,p)/area*(w[2]-u[2])+cross(w,u,p)/area*(v[2]-u[2])
+        da,db=a[2]-height(a),b[2]-height(b)
+        constraints.extend(((32-da,32-db),(32+da,32+db)))
+        lo,hi=0.,1.
+        for first,last in constraints:
+            slope=last-first
+            if abs(slope)<1e-9:
+                if first<-.001:hi=-1;break
+            elif slope>0:lo=max(lo,-first/slope)
+            else:hi=min(hi,-first/slope)
+            if lo>hi+1e-8:break
+        if lo<=hi+1e-8:intervals.append((max(0,lo),min(1,hi)))
+    covered=0.
+    for lo,hi in sorted(intervals):
+        if lo>covered+1e-5:return False
+        covered=max(covered,hi)
+        if covered>=1-1e-5:return True
+    return False
+
 class Mesh:
     def __init__(self,observer,cell):
         self.triangles=[];self.mesh_count=0;self.cell_count=0;seen=set()
@@ -59,7 +92,7 @@ class Mesh:
     def nearest(self,point):
         return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+abs(point[2]-self.centers[i][2]),distance(point,self.centers[i])))
 
-    def route(self,origin,target):
+    def route(self,origin,target,allow_partial=False):
         start,finish=self.nearest(origin),self.nearest(target)
         costs={start:0};parents={};queue=[(0,start)]
         while queue:
@@ -73,12 +106,27 @@ class Mesh:
                 if cost<costs.get(neighbor,float('inf')):
                     costs[neighbor]=cost;parents[neighbor]=node
                     heapq.heappush(queue,(cost+distance(self.centers[neighbor],self.centers[finish]),neighbor))
+        if allow_partial:
+            closest=min(costs,key=lambda i:math.dist(self.centers[i],target))
+            if distance(self.centers[closest],target)+50<distance(origin,target):
+                chain=[closest]
+                while closest in parents:closest=parents[closest];chain.append(closest)
+                return list(reversed(chain))
         raise RuntimeError('No connected navmesh route to the objective')
 
-    def path_points(self,chain):
+    def path_points(self,chain,origin=None):
         # Shared-edge midpoints stay on both adjacent floor triangles. Starting
         # at the next edge avoids backtracking to a centroid whenever an NPC moves.
-        return [self.portals[a,b] for a,b in zip(chain,chain[1:])]+[self.centers[chain[-1]]] if len(chain)>1 else []
+        points=[self.portals[a,b] for a,b in zip(chain,chain[1:])]+[self.centers[chain[-1]]] if len(chain)>1 else []
+        if origin is None:return points
+        corridor=[self.triangles[i] for i in chain];result=[];index=0;anchor=origin
+        while index<len(points):
+            chosen=index
+            for candidate in range(min(len(points)-1,index+24),index,-1):
+                if distance(anchor,points[candidate])<=1200 and corridor_visible(anchor,points[candidate],corridor):
+                    chosen=candidate;break
+            result.append(points[chosen]);anchor=points[chosen];index=chosen+1
+        return result
 
     def waypoint(self,origin,target):
         chain=self.route(origin,target)

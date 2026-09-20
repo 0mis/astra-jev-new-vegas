@@ -35,7 +35,7 @@ class WorldController:
         targets={}
         for obj in world['objectives']:
             for row in obj['targets']:
-                if row['same_space'] and row['loaded']:targets[row['ref_id']]=dict(row,quest_target=True)
+                if row['same_space']:targets[row['ref_id']]=dict(row,quest_target=True)
         entrances=world.get('travel_targets',[])
         unlocked=[row for row in entrances if not row.get('locked')]
         for row in unlocked or entrances:
@@ -45,15 +45,23 @@ class WorldController:
             if row['kind']==28 and row['distance']<250 and not row.get('locked'):
                 targets.setdefault(row['ref_id'],dict(row,quest_target=False))
         objective_text=' '.join(o['text'] for o in world['objectives']).lower()
+        if 'shoot' in objective_text and 'bottle' in objective_text:
+            for row in world['nearby']:
+                if row['kind']==31 and 'sarsaparilla bottle' in row['name'].lower():
+                    targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
+        for row in world['nearby']:
+            quest_enemy=row['kind']==43 and 'gecko' in row['name'].lower() and 'gecko' in objective_text and 'kill' in objective_text
+            if row.get('alive') and row['loaded'] and (row.get('attacking_player') or row.get('player_combat_target') or quest_enemy):
+                targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
         named=[row for row in world['nearby'] if row['name'].lower() in objective_text]
         for row in named:
-            if row['same_space'] and row['loaded']:targets[row['ref_id']]=dict(row,quest_target=True)
+            if row['same_space'] and row['loaded'] and row.get('alive',True):targets.setdefault(row['ref_id'],dict(row,quest_target=True))
         # Prefer current objectives over unrelated furniture. Generic actors and
         # doors remain available when the game supplies no actionable target.
         candidates=named if targets else sorted(world['nearby'],key=lambda r:(r['kind'] not in (28,42,43),r['distance']))
         for row in candidates:
             if row['same_space'] and row['loaded'] and row['ref_id'] not in targets and len(targets)<16:
-                targets[row['ref_id']]=dict(row,quest_target=False)
+                if row.get('alive',True):targets[row['ref_id']]=dict(row,quest_target=False)
         return targets
 
     def ensure_mesh(self,observer,state):
@@ -75,8 +83,8 @@ class WorldController:
         key=(target['ref_id'],tuple(round(x/50) for x in target['position']))
         if self.route_for!=key:
             try:
-                chain=self.mesh.route(state['player']['position'],target['position'])
-                self.route_points=self.mesh.path_points(chain)
+                chain=self.mesh.route(state['player']['position'],target['position'],allow_partial=True)
+                self.route_points=self.mesh.path_points(chain,state['player']['position'])
                 self.route_for=key
             except (OSError,ValueError,RuntimeError):
                 self.route_points=[];self.route_for=key
@@ -105,6 +113,7 @@ class WorldController:
         for ident,target in targets.items():
             name=target['name']
             options['face:'+ident]='Face/aim at '+name+'.'
+            if target.get('shootable'):options['shoot:'+ident]='Aim at '+name+' using its observed center and fire one normal shot. Approach if repeated shots miss.'
             options['route:'+ident]='Navigate toward '+name+' for up to3seconds; use a connected floor route when available, otherwise direct steering.'
             options['direct:'+ident]='Take ONE turn or short step directly toward '+name+' without obstacle routing.'
         disabled=world['disabled_controls']
@@ -125,14 +134,15 @@ class WorldController:
         camera=world.get('camera_position')
         if not camera:raise RuntimeError('No verified camera for target steering')
         waypoint=self.waypoint(observer,state,target) if action=='route' else None
-        destination=waypoint or target['position'];delta=[a-b for a,b in zip(destination,camera)]
+        destination=waypoint or target.get('aim_position',target['position']);delta=[a-b for a,b in zip(destination,camera)]
         current_view=view(state,world);error=angle(math.atan2(delta[0],delta[1])-current_view['yaw'])
         kwargs={'seconds':.15,'dx':max(-900,min(900,round(error/self.calibration['yaw_per_dx'])))}
         if not waypoint:
             height=20 if target['kind']==39 else 105 if target['kind'] in (42,43) else 65
-            desired=-math.atan2(target['position'][2]+height-camera[2],max(1,math.hypot(*delta[:2])))
+            aim_z=target['aim_position'][2] if 'aim_position' in target else target['position'][2]+height
+            desired=-math.atan2(aim_z-camera[2],max(1,math.hypot(*delta[:2])))
             kwargs['dy']=max(-350,min(350,round((desired-current_view['pitch'])/self.calibration['pitch_per_dy'])))
-        if action!='face' and abs(error)<.12:
+        if action not in ('face','shoot') and abs(error)<.12:
             remaining=math.dist(state['player']['position'][:2],destination[:2])-(20 if waypoint else 100)
             if remaining>15:kwargs.update(keys=['w'],seconds=min(.55,max(.05,remaining/300)))
         return kwargs
@@ -161,7 +171,8 @@ class WorldController:
             'seconds_without_player_or_menu_change':round(now-self.no_change_since,1),
             'nearby':[{'id':t['ref_id'],'name':t['name'],'kind':{21:'activator',28:'door',39:'furniture',42:'NPC',43:'creature'}.get(t['kind']),
                        'distance':t['distance'],'turn_radians':t['heading_error'],'quest_target':t['quest_target'],
-                       'locked':t.get('locked',False),
+                       'locked':t.get('locked',False),'shootable_target':t.get('shootable',False),
+                       'alive':t.get('alive'),'attacking_player':t.get('attacking_player',False),
                        'target_moved_since_last_decision':round(math.dist(t['position'],self.last_targets[t['ref_id']]),1) if t['ref_id'] in self.last_targets else None} for t in targets.values()],
             'crosshair':{key:world['crosshair'].get(key) for key in ('name','ref_id','locked','destination')} if world['crosshair'] else None,
             'movement_available':not world['disabled_controls']['movement'],
@@ -171,7 +182,7 @@ class WorldController:
             'recent_results':list(self.history),'route_support':self.routing_note,
             'active_floor_route':{'target_id':self.route_for[0],'waypoints_remaining':len(self.route_points),'next_waypoint':self.route_points[0] if self.route_points else None} if self.route_for else None,
             'temporarily_ineffective_actions':[key for key,tick in self.cooldowns.items() if tick>self.tick],
-            'telemetry_limit':'Loaded-world and UI text only. No image vision, health/ammunition or hostility telemetry yet.',
+            'telemetry_limit':'Read-only world and UI telemetry. Actor life and current combat targets are observed; health/ammunition, general faction hostility and image vision are not yet supported.',
             'guards':'Recording and save isolation enforced. No game console, memory writes, purchases or desktop control.'}
         compact['reusable_skills']=relevant_lessons(world,list(self.history))
         compact['planner_advice']=self.planner.exchange(state,world,compact.copy())
@@ -220,6 +231,20 @@ class WorldController:
         if executed:
             act(pid,recording,request_id=ident,actor='Jev',stop_when=lambda observed: observed.get('interface_mode')!=1,**kwargs)
             input_count=1
+        if choice.startswith('shoot:'):
+            # Finish a bounded aim correction, then fire once only if the loaded
+            # target still matches and the camera points at its observed center.
+            for substep in range(1,5):
+                aiming=observer.snapshot()
+                if aiming.get('interface_mode')!=1:break
+                aiming_world=observer.world(aiming);shot_target=self.targets(aiming_world).get(target_id)
+                if not shot_target or not shot_target.get('shootable') or not shot_target.get('alive',True):break
+                correction=self.target_input(observer,aiming,aiming_world,shot_target,'shoot')
+                if abs(correction.get('dx',0))<=3 and abs(correction.get('dy',0))<=3:
+                    act(pid,recording,button='left',seconds=.15,request_id=ident+':shot',actor='Jev',stop_when=lambda observed:observed.get('interface_mode')!=1)
+                    input_count+=1;executed=True;time.sleep(.7);break
+                act(pid,recording,request_id=ident+':aim:'+str(substep),actor='Jev',stop_when=lambda observed:observed.get('interface_mode')!=1,**correction)
+                input_count+=1;executed=True
         if executed and choice.startswith('route:'):
             for substep in range(1,12):
                 if time.monotonic()>=route_until:break
@@ -261,5 +286,5 @@ class WorldController:
             self.no_change_count+=1;self.failures[choice]=self.failures.get(choice,0)+1
             if self.failures[choice]>=2 and choice not in ('wait','wait_long'):
                 self.cooldowns[choice]=self.tick+8;self.failures[choice]=0;self.route_for=None
-        if choice in ('activate','save'):commentary('Jev','Selected action: '+options[choice],'selected_action')
+        if choice in ('activate','save') or choice.startswith('shoot:'):commentary('Jev','Selected action: '+options[choice],'selected_action')
         return {'choice':choice,'input_sent':executed,'input_count':input_count,'result':result,'latency_seconds':answer['latency_seconds']}

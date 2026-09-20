@@ -99,16 +99,25 @@ class Observer:
   if not cell or not state.get('player') or hex(self.u32(cell+0xC))!=state['player'].get('cell_id'):
    raise RuntimeError('World changed during observation')
   space=self.u32(cell+0xC0);cells=self.loaded_cells(cell);cell_set=set(cells)
+  combat_ids=set()
+  combat_array=self.u32(player+0x12C)
+  if combat_array:
+   combat_data,combat_count=struct.unpack('<II',self.read(combat_array+4,8))
+   if 0<combat_count<=64:
+    for actor in struct.unpack('<'+'I'*combat_count,self.read(combat_data,combat_count*4)):
+     if actor:combat_ids.add(hex(self.u32(actor+0xC)))
   origin=state['player']['position'];yaw=state['player']['rotation_radians'][2]
   def reference(ptr):
    base=self.u32(ptr+0x20);kind=self.read(base+4,1)[0]
-   if kind not in (21,28,39,42,43):return None
+   if kind not in (21,28,31,39,42,43):return None
    name=self.string(self.u32(base+(0xD4 if kind in (42,43) else 0x34)))
    pos=self.floats(ptr+0x30,3)
    if not name or not all(math.isfinite(v) for v in pos):return None
+   if kind==31 and 'bottle' not in name.lower():return None
+   if self.u32(ptr+8)&0x20:return None
    delta=[a-b for a,b in zip(pos,origin)]
    heading=math.atan2(delta[0],delta[1]);error=(heading-yaw+math.pi)%(2*math.pi)-math.pi
-   parent=self.u32(ptr+0x40)
+   parent=self.parent_cell(ptr)
    parent_space=self.u32(parent+0xC0) if parent else 0
    same_space=parent==cell or bool(space and parent_space==space)
    row={'ref_id':hex(self.u32(ptr+0xC)),'name':name,'kind':kind,'position':pos,
@@ -116,6 +125,20 @@ class Observer:
            'same_cell':parent==cell,'same_space':same_space,'loaded':parent in cell_set,
            'cell_id':hex(self.u32(parent+0xC)) if parent else None}
    row['worldspace_id']=hex(self.u32(parent_space+0xC)) if parent_space else None
+   if kind in (42,43):
+    life=self.u32(ptr+0x108);enemy=self.u32(ptr+0x128)
+    row['life_state']=life;row['alive']=life not in (1,2)
+    row['attacking_player']=enemy==player
+    row['player_combat_target']=row['ref_id'] in combat_ids
+    row['combat_target_id']=hex(self.u32(enemy+0xC)) if enemy else None
+   if kind in (31,42,43):
+    render=self.u32(ptr+0x64);node=self.u32(render+0x14) if render else 0
+    bound=self.u32(node+0x20) if node else 0
+    if bound:
+     center=self.floats(bound,4)
+     if all(math.isfinite(v) for v in center) and 0<center[3]<500 and math.dist(center[:3],pos)<500:
+      row['aim_position']=center[:3];row['bounding_radius']=center[3]
+    if kind==31 and 'aim_position' not in row:return None
    # Coordinates in separate interiors are unrelated, even when numerically close.
    if not same_space:row.update(distance=None,heading_error=None)
    if kind==28:
@@ -125,7 +148,7 @@ class Observer:
     extra=self.extra(ptr,0x2B)
     if extra:
      data=self.u32(extra+0xC);linked=self.u32(data) if data else 0
-     destination=self.u32(linked+0x40) if linked else 0
+     destination=self.parent_cell(linked) if linked else 0
      # A paired loading door may store its lock on the opposite reference.
      linked_lock=self.extra(linked,0x2A) if linked else 0
      linked_lock_data=self.u32(linked_lock+0xC) if linked_lock else 0
@@ -193,10 +216,10 @@ class Observer:
     row['heading_error']=round((math.atan2(delta[0],delta[1])-camera_view['yaw']+math.pi)%(2*math.pi)-math.pi,5)
   disabled=self.read(player+0x680,1)[0]
   controls={name:bool(disabled & bit) for bit,name in ((1,'movement'),(2,'look'),(4,'pipboy'),(8,'fight'),(16,'point_of_view'),(32,'rollover_text'),(64,'sneak'))}
-  target_cells={t['cell_id'] for obj in objectives for t in obj['targets'] if not t['same_space']}
+  target_cells={t['cell_id'] for obj in objectives for t in obj['targets'] if not t['same_space'] and t['cell_id']}
   target_spaces={t['worldspace_id'] for obj in objectives for t in obj['targets'] if not t['same_space'] and t['worldspace_id']}
-  entrances=[dict(row,quest_target=True) for row in nearby if row.get('destination',{}).get('cell_id') in target_cells or
-             row.get('destination',{}).get('worldspace_id') in target_spaces]
+  entrances=[dict(row,quest_target=True) for row in nearby if 'destination' in row and
+             (row['destination'].get('cell_id') in target_cells or row['destination'].get('worldspace_id') in target_spaces)]
   if self.u32(player+0x40)!=cell:raise RuntimeError('World changed during observation')
   return {'quest':self.string(self.u32(quest+0x34)) if quest else None,'objectives':objectives,
           'journal':journal,'travel_targets':sorted(entrances,key=lambda row:row['distance']),
@@ -213,6 +236,13 @@ class Observer:
    if self.read(node+4,1)[0]==kind:return node
    node=self.u32(node+8)
   return None
+
+ def parent_cell(self,reference):
+  cell=self.u32(reference+0x40)
+  if not cell:
+   persistent=self.extra(reference,0x0C)
+   if persistent:cell=self.u32(persistent+0xC)
+  return cell
 
  def loaded_cells(self,cell):
   space=self.u32(cell+0xC0)
