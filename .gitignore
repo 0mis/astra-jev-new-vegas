@@ -45,3 +45,5 @@ safety-events.jsonl
 mouse-calibration.json
 *-probe.json
 long-run-profile.json
+travel-landmarks.json
+travel-landmarks.*.next.json

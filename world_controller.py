@@ -7,6 +7,7 @@ from game_input import act
 from jev_bridge import commentary
 from planner_mailbox import PlannerMailbox
 from gameplay_skills import relevant_lessons
+from travel_memory import TravelMemory
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def angle(value):return (value+math.pi)%(2*math.pi)-math.pi
@@ -30,13 +31,14 @@ class WorldController:
         self.previous_signature=None;self.routing_note=None
         self.objective_since=time.monotonic();self.last_targets={};self.last_target_sample=None
         self.planner=PlannerMailbox()
+        self.travel_memory=TravelMemory()
 
     def targets(self,world):
         targets={}
         for obj in world['objectives']:
             for row in obj['targets']:
                 if row['same_space']:targets[row['ref_id']]=dict(row,quest_target=True)
-        entrances=world.get('travel_targets',[])
+        entrances=self.travel_memory.entrances(world)
         unlocked=[row for row in entrances if not row.get('locked')]
         for row in unlocked or entrances:
             targets[row['ref_id']]=dict(row,name=('Locked door to ' if row.get('locked') else 'Door to ')+(row['destination']['cell_name'] or 'the exterior'),quest_target=True)
@@ -173,6 +175,7 @@ class WorldController:
                        'distance':t['distance'],'turn_radians':t['heading_error'],'quest_target':t['quest_target'],
                        'locked':t.get('locked',False),'shootable_target':t.get('shootable',False),
                        'alive':t.get('alive'),'attacking_player':t.get('attacking_player',False),
+                       'remembered_entrance':t.get('remembered',False),
                        'target_moved_since_last_decision':round(math.dist(t['position'],self.last_targets[t['ref_id']]),1) if t['ref_id'] in self.last_targets else None} for t in targets.values()],
             'crosshair':{key:world['crosshair'].get(key) for key in ('name','ref_id','locked','destination')} if world['crosshair'] else None,
             'movement_available':not world['disabled_controls']['movement'],
