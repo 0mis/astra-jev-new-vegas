@@ -37,7 +37,7 @@ class WorldController:
         targets={}
         for obj in world['objectives']:
             for row in obj['targets']:
-                if row['same_space']:targets[row['ref_id']]=dict(row,quest_target=True)
+                if row['same_space']:targets[row['ref_id']]=dict(row,quest_target=True,objective_text=obj['text'])
         entrances=self.travel_memory.entrances(world)
         unlocked=[row for row in entrances if not row.get('locked')]
         for row in unlocked or entrances:
@@ -162,7 +162,7 @@ class WorldController:
             self.planner.request_help(state,world,'No observed progress for75seconds')
             return {'handoff':'Jev tried recovery but the observed state has not advanced for 75 seconds.','world':world}
         compact={
-            'objective':'Finish this fresh Fallout: New Vegas main-story campaign as quickly and reliably as possible. Choose useful gameplay actions. Astra provides proactive planning, better skills and recovery when helpful.',
+            'objective':'Finish this fresh Fallout: New Vegas main-story campaign as quickly and reliably as possible. Prefer an actionable main-story destination over optional conversations or side quests unless they materially help completion. Choose useful gameplay actions. Astra provides proactive planning, better skills and recovery when helpful.',
             'execution_contract':'Every previous action has FINISHED. No background movement is running. A floor route executes normal steering and movement for up to3seconds. Direct/manual actions execute one short step. Continue or change your action as needed. Waiting sends no inputs.',
             'floor_route_available':self.mesh is not None,
             'cell':state['player']['cell_name'],'position':[round(x,1) for x in state['player']['position']],
@@ -176,6 +176,7 @@ class WorldController:
                        'locked':t.get('locked',False),'shootable_target':t.get('shootable',False),
                        'alive':t.get('alive'),'attacking_player':t.get('attacking_player',False),
                        'remembered_entrance':t.get('remembered',False),
+                       'objective':t.get('objective_text'),'route_source':t.get('route_source'),
                        'target_moved_since_last_decision':round(math.dist(t['position'],self.last_targets[t['ref_id']]),1) if t['ref_id'] in self.last_targets else None} for t in targets.values()],
             'crosshair':{key:world['crosshair'].get(key) for key in ('name','ref_id','locked','destination')} if world['crosshair'] else None,
             'movement_available':not world['disabled_controls']['movement'],

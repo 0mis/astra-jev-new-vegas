@@ -171,7 +171,7 @@ class Observer:
      row=reference(ptr)
      if row and row['same_space']:nearby.append(row)
     except (OSError,ValueError):continue
-  quest=self.u32(player+0x6B8);objectives=[];journal=[]
+  quest=self.u32(player+0x6B8);objectives=[];journal=[];destination_cells=[]
   for obj in self.linked(player+0x6BC,100):
    try:
     if self.u32(obj+0x20)!=1:continue
@@ -185,7 +185,10 @@ class Observer:
      ptr=self.u32(item+0xC)
      if ptr:
       target=reference(ptr)
-      if target:targets.append(target)
+      if target:
+       targets.append(target)
+       if not target['same_space'] and not target['worldspace_id']:
+        destination_cells.append((self.parent_cell(ptr),self.string(self.u32(obj+8)),0))
     objectives.append({'text':self.string(self.u32(obj+8)),'targets':targets})
    except (OSError,ValueError):continue
   crosshair=None
@@ -220,6 +223,32 @@ class Observer:
   target_spaces={t['worldspace_id'] for obj in objectives for t in obj['targets'] if not t['same_space'] and t['worldspace_id']}
   entrances=[dict(row,quest_target=True) for row in nearby if 'destination' in row and
              (row['destination'].get('cell_id') in target_cells or row['destination'].get('worldspace_id') in target_spaces)]
+  # Follow actual paired loading doors outward from an interior quest target.
+  # This exposes the exterior entrance even before its grid is loaded, while
+  # preserving the target's separate interior coordinate frame.
+  visited=set();remote={row['ref_id']:row for row in entrances}
+  while destination_cells and len(visited)<8:
+   destination,objective_text,depth=destination_cells.pop(0)
+   if not destination or destination in visited or depth>3:continue
+   visited.add(destination)
+   try:
+    for door in self.linked(destination+0xAC,1500):
+     base=self.u32(door+0x20)
+     if self.read(base+4,1)[0]!=28:continue
+     teleport=self.extra(door,0x2B);data=self.u32(teleport+0xC) if teleport else 0
+     other=self.u32(data) if data else 0
+     if not other:continue
+     row=reference(other)
+     if not row:continue
+     if row['same_space']:
+      if camera_view:
+       delta=[a-b for a,b in zip(row['position'],camera_position)]
+       row['heading_error']=round((math.atan2(delta[0],delta[1])-camera_view['yaw']+math.pi)%(2*math.pi)-math.pi,5)
+      remote[row['ref_id']]=dict(row,quest_target=True,objective_text=objective_text,route_source='observed paired quest doors')
+     elif not row['worldspace_id']:
+      destination_cells.append((self.parent_cell(other),objective_text,depth+1))
+   except (OSError,ValueError):continue
+  entrances=list(remote.values())
   if self.u32(player+0x40)!=cell:raise RuntimeError('World changed during observation')
   return {'quest':self.string(self.u32(quest+0x34)) if quest else None,'objectives':objectives,
           'journal':journal,'travel_targets':sorted(entrances,key=lambda row:row['distance']),

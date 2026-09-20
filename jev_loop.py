@@ -76,6 +76,10 @@ def run(pid, recording, seconds, world_enabled=False):
     repeated, previous, idle_since = 0, None, None
     recent_menus=[]
     try:
+        saved_history=json.loads((ROOT/'menu-history.json').read_text(encoding='utf-8'))
+        if saved_history.get('pid')==pid:recent_menus=saved_history.get('results',[])[-8:]
+    except (OSError,ValueError):pass
+    try:
         while time.time() - status['started_at'] < seconds:
             if (ROOT / 'controller.stop').exists():
                 status.update(state='stopped', reason='stop file'); break
@@ -83,6 +87,14 @@ def run(pid, recording, seconds, world_enabled=False):
             if foreground_pid() != pid:
                 raise RuntimeError('Game lost foreground; stopped without stealing focus')
             state = observer.snapshot()
+            if world_enabled and any(m['name'] in ('stats','inventory','map') for m in state['menus']) and not any(m['name'] in ('message','tutorial','start') for m in state['menus']):
+                from pipboy_controller import step as pipboy_step
+                result=pipboy_step(observer,client,pid,recording,world_controller.planner)
+                status.update(phase='pipboy_choices',last_world_result=result)
+                if result.get('handoff'):
+                    status.update(state='needs_planner',reason=result['handoff']);break
+                if result.get('choice'):status['decisions']+=1;status['inputs']+=result.get('input_count',0)
+                write_status(status);time.sleep(.2);continue
             if world_enabled and any(m['name']=='vigor' for m in state['menus']):
                 idle_since=None
                 from vigor_controller import step as vigor_step
@@ -123,14 +135,19 @@ def run(pid, recording, seconds, world_enabled=False):
             campaign_loaded=bool((state.get('player') or {}).get('cell_id'))
             options = {str(i): x['text'] for i, x in enumerate(items)
                        if '/main_container/' not in x['path'] or x['text']==('Continue' if campaign_loaded else 'New')}
-            if not any(m['name']=='message' for m in state['menus']):
-                options['wait'] = 'Wait one second for a scene or prompt to advance'
+            # Menus with selectable answers are ready for input. Speech and
+            # animations without controls already wait above without API calls.
             options['assist'] = 'Ask Astra for planning, a missing control or recovery when helpful'
             compact = {'objective': 'Finish the fresh recorded Fallout: New Vegas main story. You own dialogue, character build and gameplay choices. Choose a coherent approach and adapt from results. Preserve this campaign and never load pre-existing saves.',
                        'visible_menu': texts, 'recording_verified': True,
-                       'current_campaign_paused':bool(world_enabled and (state.get('player') or {}).get('cell_id')),
+                       'current_campaign_paused':any(m['name']=='start' for m in state['menus']),
                        'recent_menu_results':recent_menus[-8:],
                        'existing_saves_backed_up': True, 'separate_save_path_configured': True}
+            if campaign_loaded:
+                journal=observer.world(state)
+                compact['active_quest']=journal['quest']
+                compact['journal']=journal['journal']
+                compact['planning_note']='Prioritize the main-story trail. Leave a conversation when its useful information is exhausted; optional local topics are not required for main-story completion.'
             requested_at = time.time()
             answer = client.request(compact, {'action': {
                 'type': 'choice', 'instructions': 'Choose your next option to advance the campaign. Dialogue, answers and build are your choices. '
@@ -154,6 +171,12 @@ def run(pid, recording, seconds, world_enabled=False):
             chosen = items[int(choice)]
             trait_menu=chosen['path'].startswith('/TraitMenu/')
             navigation_matches=lambda observed: signature(controls(observed)[0])==signature(items) if trait_menu else surface_signature(observed)==sig
+            needs_scroll=chosen['path'].startswith('/DialogMenu/') or not 0<=(chosen['y']+chosen['height']/2)*.75<720
+            if needs_scroll:
+                # A stationary mouse over a row can immediately undo arrow
+                # selection. Move clear before scrolling the observed list.
+                point_cursor(pid,recording,100,100,actor='Jev')
+                fresh=observer.snapshot()
             # Navigation is mechanical execution of the exact item Jev selected.
             # Re-observe after each key and stop if the set of controls changes.
             for step in range(16):
@@ -165,6 +188,10 @@ def run(pid, recording, seconds, world_enabled=False):
                     raise RuntimeError('Jev-selected menu item disappeared')
                 if selected['path'].startswith(('/TutorialMenu/','/LockPickMenu/')):
                     key='e'  # Observed PCShortcutLabel on Close/Exit.
+                elif not needs_scroll and selected['path'].startswith(('/DialogMenu/','/CharGenMenu/','/TraitMenu/','/MessageMenu/')) and 0<=(selected['y']+selected['height']/2)*.75<720:
+                    # Hover can override arrow navigation. Point at the exact
+                    # observed choice and verify its hover before clicking.
+                    key='enter'
                 elif selected['highlighted'] or selected['path'].startswith(('/TextEditMenu/','/CharGenMenu/')) or (trait_menu and '/LUM_ButtonRect/' in selected['path']):
                     key = 'e' if '/StartMenu/' in selected['path'] and '/confirm_container/' in selected['path'] else 'enter'
                 else:
@@ -187,7 +214,7 @@ def run(pid, recording, seconds, world_enabled=False):
                     activation_sig=surface_signature(fresh)
                 result = act(pid, recording, keys=[] if dialogue_click else [key],
                              button='left' if dialogue_click else None,
-                             seconds=.12 if dialogue_click else 1.0 if key == 'enter' else .25,
+                             seconds=.12 if dialogue_click else 1.0 if key == 'enter' else .12,
                              request_id=f'{request_id}:{step}', actor='Jev',
                              stop_when=(lambda observed: surface_signature(observed) != activation_sig)
                              if activating else None)
@@ -209,6 +236,8 @@ def run(pid, recording, seconds, world_enabled=False):
                         recent_menus.append({'selected':chosen['text'],'result':'No visible menu change after input and three-second acknowledgement wait. Choose recovery or another option.'})
                     else:
                         recent_menus.append({'selected':chosen['text'],'result':'Menu changed'})
+                    from planner_mailbox import atomic_json
+                    atomic_json(ROOT/'menu-history.json',{'pid':pid,'updated_at':time.time(),'results':recent_menus[-8:]})
                     break
             else:
                 raise RuntimeError('Menu navigation did not reach the selected item')

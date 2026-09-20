@@ -34,7 +34,7 @@ KEYS={'escape':(1,False),'1':(2,False),'2':(3,False),'3':(4,False),'4':(5,False)
  'h':(35,False),'j':(36,False),'k':(37,False),'l':(38,False),'shift':(42,False),
  'z':(44,False),'x':(45,False),'c':(46,False),'v':(47,False),'b':(48,False),
  'n':(49,False),'m':(50,False),'space':(57,False),'capslock':(58,False),
- 'f5':(63,False),'f9':(67,False),'up':(72,True),'left':(75,True),
+ 'f1':(59,False),'f2':(60,False),'f3':(61,False),'f5':(63,False),'f9':(67,False),'up':(72,True),'left':(75,True),
  'right':(77,True),'down':(80,True),'home':(71,True),'end':(79,True),'delete':(83,True)}
 BUTTONS={'left':(0x0002,0x0004),'right':(0x0008,0x0010)}
 

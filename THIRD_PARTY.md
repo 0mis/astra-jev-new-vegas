@@ -8,6 +8,7 @@
 The MIT license applies only to this repository's original source and documentation.
 
 - JIP LN NVSE primary layout research: https://github.com/jazzisparis/JIP-LN-NVSE (GameForms.h, GameData.h, GameExtraData.h and internal/netimmerse.h for navmesh, loaded cell grids, paired doors, locks, world camera and scene graph fields). xNVSE GameExtraData.h and GameBSExtraData.h also informed bounded extra-data traversal. Layout facts were implemented independently; no source bundle or plugin is distributed here. No JIP installation is required.
+- JIP GameObjects.cpp confirms persistent-cell lookup, and GameUI.h documents the MapMenu tab and selected-quest fields used for normal Pip-Boy navigation. The public game manual is available through the game's Steam store page. No game or plugin function is invoked by the observer.
 # Design research: Minecraft agent
 
 The user supplied https://github.com/rmalde/minecraft-agent . Design review used commit `78b40ed59514e5e2abde33a05ce398ecb2c39e05`: its async planner, compact observations, bounded pathfinding actions, action filtering and failure feedback informed the architecture. The New Vegas Python implementation is original; no source from that repository is copied or bundled. GitHub reported no license metadata at review time. The referenced Minecraft result uses a surveyed seed, Mineflayer and game-specific skills; its speed and cost are not New Vegas performance claims.

@@ -47,3 +47,8 @@ mouse-calibration.json
 long-run-profile.json
 travel-landmarks.json
 travel-landmarks.*.next.json
+menu-history*.json
+pipboy-decisions.jsonl
+pending-publication.json
+public-publication.json
+save-checkpoint-*.json
