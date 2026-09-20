@@ -50,7 +50,7 @@ class WorldController:
                 if row['kind']==31 and 'sarsaparilla bottle' in row['name'].lower():
                     targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
         for row in world['nearby']:
-            quest_enemy=row['kind']==43 and 'gecko' in row['name'].lower() and 'gecko' in objective_text and 'kill' in objective_text
+            quest_enemy=row['kind']==43 and row['distance']<=2000 and 'gecko' in row['name'].lower() and 'gecko' in objective_text and 'kill' in objective_text
             if row.get('alive') and row['loaded'] and (row.get('attacking_player') or row.get('player_combat_target') or quest_enemy):
                 targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
         named=[row for row in world['nearby'] if row['name'].lower() in objective_text]
@@ -113,7 +113,7 @@ class WorldController:
         for ident,target in targets.items():
             name=target['name']
             options['face:'+ident]='Face/aim at '+name+'.'
-            if target.get('shootable'):options['shoot:'+ident]='Aim at '+name+' using its observed center and fire one normal shot. Approach if repeated shots miss.'
+            if target.get('shootable') and target['distance']<=1500:options['shoot:'+ident]='Aim at '+name+' using its observed center and fire one normal shot. Approach if repeated shots miss.'
             options['route:'+ident]='Navigate toward '+name+' for up to3seconds; use a connected floor route when available, otherwise direct steering.'
             options['direct:'+ident]='Take ONE turn or short step directly toward '+name+' without obstacle routing.'
         disabled=world['disabled_controls']
