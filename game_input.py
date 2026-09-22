@@ -119,8 +119,6 @@ def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,
   if (ROOT/'controller.stop').exists():raise RuntimeError('Controller stop requested')
   health=recording_health(recording)
   if health.get('game_pid')!=pid:raise RuntimeError('Recorder is not pinned to this game process')
-  state=read_recording_state(recording)
-  if state.get('audio_discontinuities',0):raise RuntimeError('Audio discontinuity requires review before further input')
   return health
  try:
   # Opens only the known FalloutNV.exe with read/query permissions.

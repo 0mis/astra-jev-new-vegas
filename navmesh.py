@@ -7,6 +7,18 @@ import heapq,math,struct
 
 def distance(a,b):return math.dist(a[:2],b[:2])
 
+def region_fraction(a,b,bounds):
+    """Fraction of a horizontal segment within an observed obstacle rectangle."""
+    lo,hi=0.,1.
+    for axis in (0,1):
+        lower,upper=bounds[axis],bounds[axis+2];delta=b[axis]-a[axis]
+        if abs(delta)<1e-9:
+            if not lower<=a[axis]<=upper:return 0.
+        else:
+            t1,t2=(lower-a[axis])/delta,(upper-a[axis])/delta
+            lo=max(lo,min(t1,t2));hi=min(hi,max(t1,t2))
+    return max(0.,hi-lo)
+
 def triangle_distance(point,vertices):
     a,b,c=vertices
     def cross(u,v,p):return (v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0])
@@ -140,7 +152,7 @@ class Mesh:
     def nearest(self,point):
         return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+abs(point[2]-self.centers[i][2]),distance(point,self.centers[i])))
 
-    def route(self,origin,target,allow_partial=False):
+    def route(self,origin,target,allow_partial=False,avoid=()):
         start,finish=self.nearest(origin),self.nearest(target)
         costs={start:0};parents={};queue=[(0,start)]
         while queue:
@@ -150,7 +162,9 @@ class Mesh:
                 while node in parents:node=parents[node];chain.append(node)
                 return list(reversed(chain))
             for neighbor in self.edges[node]:
-                cost=costs[node]+distance(self.centers[node],self.centers[neighbor])
+                step=distance(self.centers[node],self.centers[neighbor])
+                penalty=sum(region_fraction(self.centers[node],self.centers[neighbor],region)*step*100 for region in avoid)
+                cost=costs[node]+step+penalty
                 if cost<costs.get(neighbor,float('inf')):
                     costs[neighbor]=cost;parents[neighbor]=node
                     heapq.heappush(queue,(cost+distance(self.centers[neighbor],self.centers[finish]),neighbor))
@@ -162,7 +176,7 @@ class Mesh:
                 return list(reversed(chain))
         raise RuntimeError('No connected navmesh route to the objective')
 
-    def path_points(self,chain,origin=None):
+    def path_points(self,chain,origin=None,avoid=()):
         # Shared-edge midpoints stay on both adjacent floor triangles. Starting
         # at the next edge avoids backtracking to a centroid whenever an NPC moves.
         points=[self.portals[a,b] for a,b in zip(chain,chain[1:])]+[self.centers[chain[-1]]] if len(chain)>1 else []
@@ -171,7 +185,8 @@ class Mesh:
         while index<len(points):
             chosen=index
             for candidate in range(min(len(points)-1,index+24),index,-1):
-                if distance(anchor,points[candidate])<=1200 and corridor_clearance(anchor,points[candidate],corridor):
+                avoids=all(region_fraction(anchor,points[candidate],region)<.001 for region in avoid)
+                if avoids and distance(anchor,points[candidate])<=1200 and corridor_clearance(anchor,points[candidate],corridor):
                     chosen=candidate;break
             result.append(points[chosen]);anchor=points[chosen];index=chosen+1
         return result

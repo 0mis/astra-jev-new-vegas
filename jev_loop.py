@@ -5,6 +5,7 @@ from decide_game import recording_health
 from game_input import act, foreground_pid, pause_world, point_cursor
 from jev_bridge import JevClient, commentary
 from planner_mailbox import atomic_json
+from vats_controller import VatsController
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -74,6 +75,7 @@ def run(pid, recording, seconds, world_enabled=False):
               'started_at': time.time(), 'decisions': 0, 'inputs': 0,
               'controller_scope': 'Jev chooses useful gameplay actions; Astra proactively improves planning, interfaces and reliability'}
     repeated, previous, idle_since = 0, None, None
+    vats_controller=VatsController()
     recent_menus=[]
     try:
         saved_history=json.loads((ROOT/'menu-history.json').read_text(encoding='utf-8'))
@@ -87,9 +89,27 @@ def run(pid, recording, seconds, world_enabled=False):
             if foreground_pid() != pid:
                 raise RuntimeError('Game lost foreground; stopped without stealing focus')
             state = observer.snapshot()
+            if world_enabled and any(m['name']=='inventory' for m in state['menus']) and not any(m['name'] in ('message','tutorial','start') for m in state['menus']):
+                from equipment_controller import step as equipment_step
+                result=equipment_step(observer,client,pid,recording,world_controller.planner)
+                status.update(phase='equipment_choices',last_world_result=result)
+                if result.get('handoff'):
+                    status.update(state='needs_planner',reason=result['handoff']);break
+                if result.get('choice'):
+                    status['decisions']+=1;status['inputs']+=result.get('input_count',0);status['last_choice']='equipment:'+result['choice']
+                write_status(status);continue
+            if world_enabled and any(m['name']=='vats' for m in state['menus']) and not any(m['name'] in ('message','tutorial','start') for m in state['menus']):
+                result=vats_controller.step(observer,client,pid,recording)
+                status.update(phase='vats_choices',last_world_result=result)
+                if result.get('handoff'):
+                    status.update(state='needs_planner',reason=result['handoff']);break
+                if result.get('choice'):
+                    status['decisions']+=1;status['inputs']+=result.get('input_count',0);status['last_choice']='vats:'+result['choice']
+                write_status(status);time.sleep(.2);continue
             if world_enabled and any(m['name'] in ('stats','inventory','map') for m in state['menus']) and not any(m['name'] in ('message','tutorial','start') for m in state['menus']):
                 from pipboy_controller import step as pipboy_step
-                result=pipboy_step(observer,client,pid,recording,world_controller.planner)
+                try:result=pipboy_step(observer,client,pid,recording,world_controller.planner)
+                except InterruptedError:result={'discarded':'Observed modal interrupted the operation; handle its controls before continuing.'}
                 status.update(phase='pipboy_choices',last_world_result=result)
                 if result.get('handoff'):
                     status.update(state='needs_planner',reason=result['handoff']);break
@@ -119,7 +139,7 @@ def run(pid, recording, seconds, world_enabled=False):
                          if m['name'] not in ('hud', 'loading', 'start', 'message', 'appearance','dialogue','chargen','traits','traitselect','tutorial','lockpick') and m['labels']
                          and not (m['name'] == 'textedit' and any(x['text'] == 'Enter character name.' for x in m['labels']))]
             idle_limit=120 if any(m['name']=='dialogue' for m in state['menus']) else 30
-            if non_start or ((state.get('player') or {}).get('cell_id') and not items
+            if (non_start and not items) or ((state.get('player') or {}).get('cell_id') and not items
                              and idle_since is not None and time.time() - idle_since > idle_limit):
                 status.update(state='needs_planner', reason='New state needs controller support',
                               menus=non_start, observation=state)

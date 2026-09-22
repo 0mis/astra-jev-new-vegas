@@ -25,12 +25,21 @@ class WorldController:
         if not all(.0001<abs(self.calibration[key])<.02 for key in ('yaw_per_dx','pitch_per_dy')):
             raise RuntimeError('Mouse calibration outside measured bounds')
         self.history=deque(maxlen=10)
-        self.mesh=None;self.mesh_cell=None;self.route_points=[];self.route_for=None;self.route_partial=False
+        self.mesh=None;self.mesh_cell=None;self.mesh_space=None;self.route_points=[];self.route_for=None;self.route_partial=False
         self.no_change_since=time.monotonic();self.no_change_count=0
         self.failures={};self.cooldowns={};self.tick=0
         self.previous_signature=None;self.routing_note=None
         self.objective_since=time.monotonic();self.last_targets={};self.last_target_sample=None
         self.route_error=None;self.travel_samples=deque()
+        self.observed_obstacles=[]
+        try:
+            data=json.loads((ROOT/'navigation-obstacles.json').read_text())
+            for row in data.get('regions',[]):
+                b=row.get('bounds');cells=row.get('cells')
+                if (isinstance(b,list) and len(b)==4 and all(isinstance(v,(float,int)) and math.isfinite(v) for v in b)
+                    and b[0]<b[2] and b[1]<b[3] and isinstance(cells,list) and all(isinstance(v,str) for v in cells)):
+                    self.observed_obstacles.append(row)
+        except (OSError,ValueError):pass
         self.planner=PlannerMailbox()
         self.travel_memory=TravelMemory()
 
@@ -54,8 +63,8 @@ class WorldController:
                     targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
         for row in world['nearby']:
             quest_enemy=row['kind']==43 and row['distance']<=2000 and 'gecko' in row['name'].lower() and 'gecko' in objective_text and 'kill' in objective_text
-            if row.get('alive') and row['loaded'] and (row.get('attacking_player') or row.get('player_combat_target') or quest_enemy):
-                targets[row['ref_id']]=dict(row,quest_target=True,shootable=True)
+            if row.get('alive') and row['loaded'] and (quest_enemy or (row['distance'] is not None and row['distance']<=2000 and (row.get('attacking_player') or row.get('player_combat_target')))):
+                targets[row['ref_id']]=dict(row,quest_target=quest_enemy,shootable=True)
         named=[row for row in world['nearby'] if row['name'].lower() in objective_text]
         for row in named:
             if row['same_space'] and row['loaded'] and row.get('alive',True):targets.setdefault(row['ref_id'],dict(row,quest_target=True))
@@ -71,12 +80,21 @@ class WorldController:
         from navmesh import Mesh
         cell=state['player']['cell_id']
         if cell!=self.mesh_cell:
-            self.mesh_cell=cell;self.mesh=None;self.route_for=None;self.route_points=[]
+            old_space=self.mesh_space
+            self.mesh_cell=cell;self.mesh=None
             try:
                 player=observer.u32(0x11DEA3C)
-                self.mesh=Mesh(observer,observer.u32(player+0x40))
+                parent=observer.u32(player+0x40);space=observer.u32(parent+0xC0)
+                self.mesh_space=hex(observer.u32(space+0xC)) if space else None
+                # Exterior cells share coordinates. Keep an in-progress route
+                # through a boundary instead of repeatedly selecting a different
+                # starting triangle and reversing direction at that boundary.
+                if not self.mesh_space or self.mesh_space!=old_space:
+                    self.route_for=None;self.route_points=[]
+                self.mesh=Mesh(observer,parent)
                 self.routing_note=f'Floor geometry loaded from {self.mesh.mesh_count} meshes in {self.mesh.cell_count} cells with {self.mesh.declared_links} declared boundary links; manual and direct movement also available.'
             except (OSError,ValueError,RuntimeError) as exc:
+                self.route_for=None;self.route_points=[];self.mesh_space=None
                 self.routing_note='Floor route unavailable; direct steering and manual movement remain available: '+str(exc)
 
     def waypoint(self,observer,state,target):
@@ -92,8 +110,9 @@ class WorldController:
         if self.route_for!=key:
             self.route_error=None;self.route_partial=False
             try:
-                chain=self.mesh.route(state['player']['position'],target['position'],allow_partial=True)
-                self.route_points=self.mesh.path_points(chain,state['player']['position'])
+                avoid=[r['bounds'] for r in self.observed_obstacles if state['player']['cell_id'] in r['cells'] or (self.mesh_space and r.get('worldspace_id')==self.mesh_space)]
+                chain=self.mesh.route(state['player']['position'],target['position'],allow_partial=True,avoid=avoid)
+                self.route_points=self.mesh.path_points(chain,state['player']['position'],avoid=avoid)
                 self.route_partial=bool(self.route_points and math.dist(self.route_points[-1][:2],target['position'][:2])>200)
                 self.route_for=key
             except (OSError,ValueError,RuntimeError) as exc:
@@ -115,7 +134,9 @@ class WorldController:
             'jump':'Jump in place.','jump_forward':'Jump while moving forward for 0.7 seconds to clear a low rock, ledge or prop.',
             'sneak':'Toggle crouching/sneaking.','point_of_view':'Switch first/third-person view.',
             'pipboy':'Open the Pip-Boy for equipment, status or quests.',
+            'equipment':'Open owned weapons and armor in the Pip-Boy Items screen.',
             'health':'Inspect exact health and available healing in the Pip-Boy Stats page.',
+            'vats':'Open VATS to queue attacks using action points. Use when its displayed hit chance or slowed time helps; normal tracked shooting is also available.',
             'reload':'Reload the equipped weapon.','holster':'Holster/unholster the weapon.',
             'fire':'Fire/attack at the current crosshair.','aim_weapon':'Briefly aim the equipped weapon.',
             'save':'Quicksave the current campaign in its isolated save folder.',
@@ -125,13 +146,13 @@ class WorldController:
         for ident,target in targets.items():
             name=target['name']
             options['face:'+ident]='Face/aim at '+name+'.'
-            if target.get('shootable') and target['distance']<=1500:options['shoot:'+ident]='Aim at '+name+' using its observed center and fire one normal shot. Approach if repeated shots miss.'
+            if target.get('shootable') and target['distance']<=1500:options['shoot:'+ident]='Track '+name+' and fire ordinary shots for up to three seconds. Stop on death, empty magazine, critical health or a menu change. Use VATS or reposition when useful.'
             options['route:'+ident]='Navigate toward '+name+' for up to3seconds; use a connected floor route when available, otherwise direct steering.'
             options['direct:'+ident]='Take ONE turn or short step directly toward '+name+' without obstacle routing.'
         disabled=world['disabled_controls']
         unavailable={'movement':('forward','backward','left','right','forward_left','forward_right','jump','jump_forward'),
                      'look':('look_left','look_right','look_up','look_down'),
-                     'fight':('fire','aim_weapon','reload','holster'), 'pipboy':('pipboy','health'),
+                     'fight':('fire','aim_weapon','reload','holster','vats'), 'pipboy':('pipboy','health','equipment'),
                      'sneak':('sneak',),'point_of_view':('point_of_view',)}
         for control,keys in unavailable.items():
             if disabled[control]:
@@ -162,7 +183,7 @@ class WorldController:
 
     def travel_stalled(self,state,world,now):
         """Detect returning to the same place despite locally moving/turning."""
-        player=state['player'];key=(player['cell_id'],tuple(o['text'] for o in world['objectives']))
+        player=state['player'];key=(world.get('worldspace_id') or player['cell_id'],tuple(o['text'] for o in world['objectives']))
         if self.travel_samples and self.travel_samples[-1][1]!=key:self.travel_samples.clear()
         self.travel_samples.append((now,key,tuple(player['position'])))
         while len(self.travel_samples)>1 and now-self.travel_samples[1][0]>=40:self.travel_samples.popleft()
@@ -170,6 +191,10 @@ class WorldController:
         return now-first[0]>=40 and math.dist(first[2][:2],player['position'][:2])<180
 
     def step(self,observer,client,pid,recording,state):
+        if (state.get('player') or {}).get('life_state') in (1,2):
+            self.mesh_cell=None;self.route_for=None;self.route_points=[];self.travel_samples.clear()
+            time.sleep(.5)
+            return {'waiting_for_respawn':True,'input_sent':False}
         world=observer.world(state);targets=self.targets(world);self.tick+=1
         self.ensure_mesh(observer,state)
         sig=tuple(obj['text'] for obj in world['objectives'])
@@ -217,6 +242,14 @@ class WorldController:
         compact['reusable_skills']=relevant_lessons(world,list(self.history))
         compact['planner_advice']=self.planner.exchange(state,world,compact.copy())
         options=self.options(world,targets)
+        health=state['player'].get('health_bar_fraction_approx')
+        if health is not None and health>.9:options.pop('health',None)
+        if health is not None and health<.45 and 'health' in options:
+            # The observed first Primm death followed continued quest travel at
+            # 33% then 9% health. Keep healing, combat and manual retreat choices.
+            options={key:value for key,value in options.items() if not key.startswith(('route:','direct:'))}
+            options['health']='URGENT: health is below 45%. Open Stats to inspect exact health and heal before continuing exposed travel.'
+            compact['survival_priority']='We previously died by ignoring low health while travelling. Inspect and heal now, or disengage if healing is unavailable. Advancing a route while critically injured loses progress.'
         if not world['crosshair'] and not state['player'].get('sit_sleep_state'):
             options.pop('activate',None)
         if 'holster' in options and 'weapon_drawn' in state['player']:
@@ -260,29 +293,37 @@ class WorldController:
         elif choice in ('fire','aim_weapon'):
             kwargs.update(button='left' if choice=='fire' else 'right',seconds=.25)
         else:
-            keys={'activate':'e','jump':'space','sneak':'ctrl','point_of_view':'f','pipboy':'tab','health':'f1','reload':'r','holster':'r','save':'f5'}
+            keys={'activate':'e','jump':'space','sneak':'ctrl','point_of_view':'f','pipboy':'tab','health':'f1','equipment':'f2','vats':'v','reload':'r','holster':'r','save':'f5'}
             kwargs.update(keys=[keys[choice]],seconds=.9 if choice=='holster' else .15)
             if choice=='activate':self.mesh_cell=None
-        input_count=0;route_until=time.monotonic()+3
+        input_count=0;shots_sent=0;route_until=time.monotonic()+3
         def route_interrupted(observed):
             player=observed.get('player') or {}
             return (observed.get('interface_mode')!=1 or player.get('cell_id')!=fresh['player']['cell_id']
+                    or player.get('life_state') in (1,2)
+                    or player.get('health_bar_fraction_approx',1)<.45
                     or (player.get('in_combat') and not fresh['player'].get('in_combat')))
         if executed:
             act(pid,recording,request_id=ident,actor='Jev',stop_when=route_interrupted if choice.startswith('route:') else lambda observed: observed.get('interface_mode')!=1,**kwargs)
             input_count=1
         if choice.startswith('shoot:'):
-            # Finish a bounded aim correction, then fire once only if the loaded
-            # target still matches and the camera points at its observed center.
-            for substep in range(1,5):
+            # Jev chooses the target and combat mode. Bounded repeated tracking
+            # avoids a new strategic request between each ordinary shot.
+            shooting_until=time.monotonic()+3
+            for substep in range(1,13):
+                if time.monotonic()>=shooting_until:break
                 aiming=observer.snapshot()
-                if aiming.get('interface_mode')!=1:break
+                if (aiming.get('interface_mode')!=1 or aiming['player'].get('life_state') in (1,2)
+                    or aiming['player'].get('loaded_ammunition')==0
+                    or aiming['player'].get('health_bar_fraction_approx',1)<.3):break
                 aiming_world=observer.world(aiming);shot_target=self.targets(aiming_world).get(target_id)
                 if not shot_target or not shot_target.get('shootable') or not shot_target.get('alive',True):break
                 correction=self.target_input(observer,aiming,aiming_world,shot_target,'shoot')
-                if abs(correction.get('dx',0))<=3 and abs(correction.get('dy',0))<=3:
-                    act(pid,recording,button='left',seconds=.15,request_id=ident+':shot',actor='Jev',stop_when=lambda observed:observed.get('interface_mode')!=1)
-                    input_count+=1;executed=True;time.sleep(.7);break
+                tolerance=min(.20,max(.045,math.atan2(shot_target.get('bounding_radius',20)*.6,max(30,shot_target['distance']))))
+                aim_error=max(abs(correction.get('dx',0)*self.calibration['yaw_per_dx']),abs(correction.get('dy',0)*self.calibration['pitch_per_dy']))
+                if aim_error<=tolerance or (aiming_world.get('crosshair') or {}).get('ref_id')==target_id:
+                    act(pid,recording,button='left',seconds=.12,request_id=ident+':shot:'+str(substep),actor='Jev',stop_when=lambda observed:observed.get('interface_mode')!=1)
+                    input_count+=1;shots_sent+=1;executed=True;continue
                 act(pid,recording,request_id=ident+':aim:'+str(substep),actor='Jev',stop_when=lambda observed:observed.get('interface_mode')!=1,**correction)
                 input_count+=1;executed=True
         if executed and choice.startswith('route:'):
@@ -312,6 +353,8 @@ class WorldController:
         changed=moved>4 or turned>.015 or fingerprint(fresh,current)!=fingerprint(after,after_world)
         result={'action':options.get(choice,choice),'moved_units':round(moved,1),'view_change_radians':round(turned,3),
                 'changed':changed,'input_sent':executed,'menus':[m['name'] for m in after['menus']]}
+        if choice.startswith('shoot:'):
+            result.update(shots_sent=shots_sent,loaded_ammunition_before=fresh['player'].get('loaded_ammunition'),loaded_ammunition_after=after['player'].get('loaded_ammunition'))
         if ':' in choice:
             after_target=self.targets(after_world).get(target_id)
             result['target_distance_before']=target['distance']

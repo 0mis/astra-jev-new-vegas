@@ -78,7 +78,8 @@ class Observer:
      out["player"]={"position":pos,"rotation_radians":rot,"ref_id":hex(self.u32(player+0xC)),
        "cell_id":hex(self.u32(cell+0xC)) if cell else None,
        "cell_name":self.string(self.u32(cell+0x1C)) if cell else None}
-     out['player']['in_combat']=bool(self.read(player+0x104,1)[0])
+     # PlayerCharacter overrides the actor combat field with pcInCombat.
+     out['player']['in_combat']=bool(self.read(player+0xDF0,1)[0])
      out['player']['life_state']=self.u32(player+0x108)
      out['player']['sit_sleep_state']=self.u32(player+0x1AC)
      process=self.u32(player+0x68)
@@ -275,7 +276,7 @@ class Observer:
   return {'quest':self.string(self.u32(quest+0x34)) if quest else None,'objectives':objectives,
           'journal':journal,'travel_targets':sorted(entrances,key=lambda row:row['distance']),
           'worldspace_id':hex(self.u32(space+0xC)) if space else None,'loaded_cell_count':len(cells),
-          'nearby':sorted(nearby,key=lambda row:row['distance'])[:40], 'crosshair':crosshair,'camera_position':camera_position,
+          'nearby':sorted(nearby,key=lambda row:(not row.get('attacking_player',False),row['distance']))[:40], 'crosshair':crosshair,'camera_position':camera_position,
           'camera_view':camera_view,'disabled_controls':controls,
           'observation_source':'read-only loaded-world telemetry; not visual recognition'}
 

@@ -46,6 +46,7 @@ def main():
     p.add_argument("--max-video-kbps",type=int,default=1500)
     p.add_argument("--audio-format",choices=['wav','aac'],default='aac')
     p.add_argument('--audio-buffer-frames',type=int,default=96000)
+    p.add_argument('--audio-backend',choices=['wasapi_callback','soundcard'],default='wasapi_callback')
     args=p.parse_args()
     if not 500<=args.max_video_kbps<=8000:raise ValueError('Video rate must be 500 to 8000 kbps')
     if not 2048<=args.audio_buffer_frames<=96000:raise ValueError('Audio buffer outside supported bounds')
@@ -63,6 +64,7 @@ def main():
            "audio_codec":args.audio_format,"max_video_kbps":args.max_video_kbps,
            "microphone_recorded":False,"audio_discontinuities":0,"audio_warnings":[]}
     state['audio_buffer_frames']=args.audio_buffer_frames
+    state['audio_backend']=args.audio_backend
     write_state(folder,state)
     cmd=[exe,"-hide_banner","-y","-f","gdigrab","-framerate","30","-draw_mouse","0",
          "-i","hwnd="+hex(hwnd),"-an","-vf","scale=1280:-2",
@@ -75,6 +77,7 @@ def main():
     state.update(encoder_pid=proc.pid,video_launch_at=time.time())
     audio=None; audio_proc=None; audio_log=None; audio_writer=None; audio_queue=queue.Queue(maxsize=100); writer_errors=[]; n=0; failure=None
     monitor=None;monitor_stop=threading.Event();monitor_errors=[]
+    audio_task=None;avrt=None
     try:
         if args.audio_format=='aac':
             audio_log=(folder/'audio-ffmpeg.log').open('wb')
@@ -92,11 +95,16 @@ def main():
                         audio_proc.stdin.write(packet);audio_proc.stdin.flush()
                 except BaseException as exc:writer_errors.append(str(exc))
             audio_writer=threading.Thread(target=write_audio,daemon=True);audio_writer.start()
-        speaker=sc.default_speaker()
-        if speaker is None:raise RuntimeError("No default playback device")
-        loop=sc.get_microphone(id=speaker.id,include_loopback=True)
-        if not loop.isloopback:raise RuntimeError("Refusing a microphone device")
-        state["audio_device"]=speaker.name
+        if args.audio_backend=='wasapi_callback':
+            from loopback_audio import CallbackLoopback
+            capture=CallbackLoopback();state['audio_device']=capture.device_name
+        else:
+            speaker=sc.default_speaker()
+            if speaker is None:raise RuntimeError("No default playback device")
+            loop=sc.get_microphone(id=speaker.id,include_loopback=True)
+            if not loop.isloopback:raise RuntimeError("Refusing a microphone device")
+            state["audio_device"]=speaker.name
+            capture=loop.recorder(samplerate=48000,channels=[0,1],blocksize=args.audio_buffer_frames)
         def monitor_capture():
             # Filesystem checks and JSON publication can briefly block on Windows.
             # Keep them away from the audio capture thread and its finite buffer.
@@ -107,7 +115,18 @@ def main():
                     write_state(folder,state.copy())
             except BaseException as exc:monitor_errors.append(str(exc))
         monitor=threading.Thread(target=monitor_capture,daemon=True);monitor.start()
-        with loop.recorder(samplerate=48000,channels=[0,1],blocksize=args.audio_buffer_frames) as rec:
+        # Ask Windows to schedule this capture thread as an audio task. This
+        # applies only to the recorder thread and is reverted on finalization.
+        avrt=c.WinDLL('avrt',use_last_error=True)
+        avrt.AvSetMmThreadCharacteristicsW.argtypes=[w.LPCWSTR,c.POINTER(w.DWORD)]
+        avrt.AvSetMmThreadCharacteristicsW.restype=w.HANDLE
+        avrt.AvRevertMmThreadCharacteristics.argtypes=[w.HANDLE]
+        avrt.AvRevertMmThreadCharacteristics.restype=w.BOOL
+        task_index=w.DWORD()
+        audio_task=avrt.AvSetMmThreadCharacteristicsW('Audio',c.byref(task_index))
+        state['audio_scheduling']={'mmcss_audio':bool(audio_task),'error':0 if audio_task else c.get_last_error()}
+        state['audio_scheduling']['mmcss_applies_to_capture']=args.audio_backend=='soundcard'
+        with capture as rec:
             state["audio_started_at"]=time.time()
             while time.time()-started < args.seconds and not (folder/"stop.request").exists():
                 if proc.poll() is not None:raise RuntimeError("Video encoder exited before recording finished")
@@ -119,9 +138,14 @@ def main():
                     samples=rec.record(numframes=4800)
                 for warning in caught:
                     message=str(warning.message)
-                    event={'at':time.time(),'message':message}
+                    event={'at':time.time(),'message':message,'captured_frames_before_packet':state['audio_frames'],
+                           'capture_elapsed_seconds':time.time()-state['audio_started_at']}
                     state['audio_warnings'].append(event)
                     if 'discontinuity' in message.lower():state['audio_discontinuities']+=1
+                if args.audio_backend=='wasapi_callback':
+                    for event in rec.take_events():
+                        state['audio_warnings'].append(event)
+                        if 'discontinuity' in event['message'].lower():state['audio_discontinuities']+=1
                 if args.audio_format=='wav' and (audio is None or n>=48000*1800):
                     if audio:audio.close()
                     index=state["audio_frames"]//(48000*1800)
@@ -140,6 +164,7 @@ def main():
         failure=f"{type(exc).__name__}: {exc}"
         state.update(state="failed",error=failure)
     finally:
+        if audio_task and avrt:avrt.AvRevertMmThreadCharacteristics(audio_task)
         monitor_stop.set()
         if monitor:
             monitor.join(timeout=10)

@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from planner_mailbox import atomic_json
 from world_controller import WorldController
-from navmesh import Mesh,corridor_visible,corridor_clearance
+from navmesh import Mesh,corridor_visible,corridor_clearance,region_fraction
+from decide_game import capture_quality
 
 
 class StatusPublication(unittest.TestCase):
@@ -35,6 +36,18 @@ class StatusPublication(unittest.TestCase):
                 self.assertTrue(atomic_json(target,{'state':'ready'}))
             self.assertEqual(json.loads(target.read_text()),{'state':'ready'})
 
+class CaptureQuality(unittest.TestCase):
+    def test_isolated_logged_warning_does_not_stop_fresh_synchronized_capture(self):
+        state={'audio_discontinuities':1,'audio_warnings':[{'at':95,'message':'data discontinuity'}]}
+        self.assertEqual(capture_quality(state,10_000_000,10_100_000,100)['audio_warning_count'],1)
+
+    def test_persistent_glitches_stop_capture_use(self):
+        state={'audio_warnings':[{'at':t,'message':'data discontinuity'} for t in [80,90,95]]}
+        with self.assertRaises(RuntimeError):capture_quality(state,10_000_000,10_000_000,100)
+
+    def test_timeline_drift_stops_capture_use(self):
+        with self.assertRaises(RuntimeError):capture_quality({},10_000_000,7_000_000,100)
+
 
 class TravelRecovery(unittest.TestCase):
     def setUp(self):
@@ -57,6 +70,11 @@ class TravelRecovery(unittest.TestCase):
         for t in range(40):self.sample(t,0)
         self.assertFalse(self.sample(40,0,'interior'))
 
+    def test_exterior_cell_oscillation_remains_a_stall(self):
+        self.world['worldspace_id']='same-wasteland'
+        for t in range(40):self.sample(t,120 if t%2 else 0,'a' if t%2 else 'b')
+        self.assertTrue(self.sample(40,0,'b'))
+
     def test_ineffective_route_stays_unavailable(self):
         self.controller.tick=5;self.controller.cooldowns={'route:casino':10}
         world={'disabled_controls':dict.fromkeys(('movement','look','fight','pipboy','sneak','point_of_view'),False)}
@@ -64,6 +82,21 @@ class TravelRecovery(unittest.TestCase):
         self.assertNotIn('route:casino',choices)
         self.assertIn('assist',choices)
         self.assertIn('left',choices)
+
+    def test_exterior_boundary_preserves_the_current_route(self):
+        self.assert_route_transition(0x300,False)
+
+    def test_interior_transition_discards_exterior_coordinates(self):
+        self.assert_route_transition(0,True)
+
+    def assert_route_transition(self,space,should_clear):
+        c=self.controller;c.mesh_space='0x123';c.mesh_cell='old';c.route_for=('door',());c.route_points=[(1,2,3)]
+        class ObservedPointers:
+            def u32(self,address):return {0x11DEA3C:0x100,0x140:0x200,0x2C0:space,0x30C:0x123}[address]
+        with patch('navmesh.Mesh') as mesh:
+            mesh.return_value.mesh_count=1;mesh.return_value.cell_count=1;mesh.return_value.declared_links=1
+            c.ensure_mesh(ObservedPointers(),{'player':{'cell_id':'new'}})
+        self.assertEqual(c.route_points,[] if should_clear else [(1,2,3)])
 
 
 class CrossCellRoutes(unittest.TestCase):
@@ -94,6 +127,12 @@ class CrossCellRoutes(unittest.TestCase):
         self.assertTrue(corridor_visible((10,30,0),(10,170,0),floor))
         self.assertFalse(corridor_clearance((10,30,0),(10,170,0),floor))
         self.assertTrue(corridor_clearance((50,30,0),(50,170,0),floor))
+
+    def test_observed_region_penalizes_crossing_but_not_parallel_escape(self):
+        bounds=[20,20,80,80]
+        self.assertAlmostEqual(region_fraction((0,50,0),(100,50,0),bounds),.6)
+        self.assertEqual(region_fraction((0,0,0),(100,0,0),bounds),0)
+        self.assertAlmostEqual(region_fraction((50,50,0),(150,50,0),bounds),.3)
 
 
 if __name__=='__main__':unittest.main()

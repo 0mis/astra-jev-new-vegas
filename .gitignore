@@ -58,3 +58,10 @@ repair-backups/
 *-audit.json
 *-inspection-*.json
 controller.stop.consumed*
+navigation-obstacles.json
+
+vats-decisions.jsonl
+loopback-probe.json
+probe_loopback.py
+
+equipment-decisions.jsonl

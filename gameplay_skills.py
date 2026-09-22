@@ -13,4 +13,6 @@ def relevant_lessons(world,recent):
         lessons.append({'skill':'blocked_direct_route','fact':'A direct approach made no movement. An obstacle route or manual detour can recover. A floor route may initially move away from the destination to get around a wall; judge its waypoint progress.'})
     if world.get('objectives'):
         lessons.append({'skill':'finite_actions','fact':'Actions finish before the next decision. No input continues during wait. Continue a useful route or choose another action until its objective is reached.'})
+    if any(row.get('attacking_player') and row.get('alive') for row in world.get('nearby',[])):
+        lessons.append({'skill':'survive_primm','fact':'The first Primm attempt died after ignoring attackers and low health. Check health, draw a weapon if holstered, and defeat close attackers or retreat to cover. A living character is required to finish the route. Use the health action to heal through the Pip-Boy.'})
     return lessons

@@ -15,7 +15,9 @@ def read(observer):
         match=re.fullmatch(r'(\d+)/(\d+)',str(values.get(0x1009,'')))
         if root=='StatsMenu' and match:
             result['health']={'current':int(match[1]),'maximum':int(match[2])}
-            result['stimpaks']=int(values.get(0x1005,0));result['status_page']=int(values.get(0x1004,-1))
+            counts=[re.fullmatch(r'\((\d+)\) Stimpak',text) for text in result['text']]
+            result['stimpaks']=next((int(m[1]) for m in counts if m),0)
+            result['status_page']=int(values.get(0x1004,-1))
     if menu['name']=='map':
         ptr=observer.u32(0x11DA368)
         tab=observer.read(ptr+0x80,1)[0]
@@ -29,6 +31,8 @@ def wait_state(observer,predicate,seconds=2):
     until=time.monotonic()+seconds
     while True:
         value=read(observer)
+        if value and any(m['name'] in ('tutorial','message') and any(x.get('target') for x in m['labels']) for m in value['state']['menus']):
+            raise InterruptedError('An observed modal interrupted the Pip-Boy operation')
         if predicate(value):return value
         if time.monotonic()>=until:raise RuntimeError('Pip-Boy transition was not acknowledged')
         time.sleep(.1)
@@ -40,13 +44,18 @@ def step(observer,client,pid,recording,planner):
     quests=list(dict.fromkeys(row['quest'] for row in world['journal']))
     options={'close':'Close the Pip-Boy and resume play.',
              'quests':'Show the quest list in the Data tab.',
+             'status':'Show Stats to inspect health, injuries and healing controls.',
              'assist':'Ask Astra for a missing equipment, map or status control.'}
     health=before.get('health')
-    if health and health['current']<health['maximum'] and before.get('stimpaks',0)>0:
-        options['heal']='Use one Stimpak, verify health or inventory changed, and close the Pip-Boy.'
+    if health and health['current']<health['maximum']*.85 and before.get('stimpaks',0)>0:
+        options['heal']='Use one Stimpak and verify health or inventory changed. Keep this menu open to assess whether more healing is needed before returning to danger.'
     for index,name in enumerate(quests):
+        if name==world['quest']:continue
         options['track:'+str(index)]='Track '+name+' and close the Pip-Boy after verifying it is active.'
-    compact={'objective':'Finish the recorded main story as quickly and reliably as possible. Select a useful main-story objective when none is tracked. DLC and local side quests are optional.',
+    if before['kind']=='stats':options.pop('status',None)
+    if health and health['current']<health['maximum']*.45 and 'heal' in options:
+        options={key:options[key] for key in ('heal','assist')}
+    compact={'objective':'Finish the recorded main story as quickly and reliably as possible. If health is low, heal before closing this menu and returning to danger. Select a useful main-story objective when none is tracked. DLC and local side quests are optional.',
              'visible_menu':before['text'],'active_quest':world['quest'],'journal':world['journal'],
              'observed_data_tab':before.get('tab'),'selected_quest':before.get('selected_quest'),
              'exact_health':before.get('health'),'stimpaks':before.get('stimpaks'),
@@ -69,6 +78,9 @@ def step(observer,client,pid,recording,planner):
         press('tab');wait_state(observer,lambda observed:observed is None)
     if choice=='close':
         close();return {'choice':choice,'input_count':inputs,'result':'Pip-Boy closed'}
+    if choice=='status':
+        press('f1');wait_state(observer,lambda observed:observed and observed['kind']=='stats')
+        return {'choice':choice,'input_count':inputs,'result':'Stats opened'}
     if choice=='heal':
         for _ in range(5):
             fresh=read(observer)
@@ -83,7 +95,7 @@ def step(observer,client,pid,recording,planner):
         count=fresh['stimpaks'];hp=fresh['health']['current'];press('s')
         after=wait_state(observer,lambda observed:observed and (observed.get('stimpaks',count)<count or observed.get('health',{}).get('current',hp)>hp))
         commentary('Jev','Used one Stimpak; observed health '+str(after.get('health'))+'.','selected_action')
-        close();return {'choice':choice,'input_count':inputs,'result':'Stimpak use observed','health':after.get('health')}
+        return {'choice':choice,'input_count':inputs,'result':'Stimpak use observed; menu remains open for reassessment','health':after.get('health')}
     if fresh['kind']!='map':
         press('f3');fresh=wait_state(observer,lambda observed:observed and observed['kind']=='map')
     # The selected tab is read from the verified MapMenu layout, not inferred
