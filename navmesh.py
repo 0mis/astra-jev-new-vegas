@@ -1,7 +1,7 @@
 """Read-only loaded-floor routing; normal input still performs movement.
 
-Join triangles only across matching floor edges, including edges shared by two
-loaded exterior cells. Interior coordinate frames are never combined.
+Join matching floor edges and validated, game-declared links between loaded
+meshes. Interior coordinate frames are never combined.
 """
 import heapq,math,struct
 
@@ -52,9 +52,18 @@ def corridor_visible(a,b,triangles):
         if covered>=1-1e-5:return True
     return False
 
+def corridor_clearance(a,b,triangles,radius=24):
+    """A shortcut must leave room for the player on both sides of its line."""
+    length=distance(a,b)
+    if length<1:return corridor_visible(a,b,triangles)
+    offset=(-(b[1]-a[1])*radius/length,(b[0]-a[0])*radius/length,0)
+    return all(corridor_visible(tuple(a[k]+side*offset[k] for k in range(3)),
+                                tuple(b[k]+side*offset[k] for k in range(3)),triangles)
+               for side in (0,-1,1))
+
 class Mesh:
     def __init__(self,observer,cell):
-        self.triangles=[];self.mesh_count=0;self.cell_count=0;seen=set()
+        self.triangles=[];self.mesh_count=0;self.cell_count=0;seen=set();mesh_data={}
         for parent in observer.loaded_cells(cell):
             array=observer.u32(parent+0x64)
             if not array:continue
@@ -70,10 +79,17 @@ class Mesh:
                 triangles,nt=struct.unpack('<II',observer.read(mesh+0x3C,8))
                 if not 3<=nv<=15000 or not 1<=nt<=20000:raise RuntimeError('Navmesh count outside bounds')
                 points=list(struct.iter_unpack('<3f',observer.read(vertices,nv*12)))
-                records=list(struct.iter_unpack('<3H3h2H',observer.read(triangles,nt*16)))
+                records=list(struct.iter_unpack('<3H3hI',observer.read(triangles,nt*16)))
                 if any(any(index>=nv for index in row[:3]) for row in records):raise RuntimeError('Invalid triangle vertex index')
                 if not all(math.isfinite(v) for point in points for v in point):raise RuntimeError('Invalid navmesh vertex')
+                offset=len(self.triangles)
                 self.triangles.extend(tuple(points[i] for i in row[:3]) for row in records)
+                extra,count=struct.unpack('<II',observer.read(mesh+0x4C,8))
+                if not 0<=count<=60000:raise RuntimeError('Navmesh edge link count outside bounds')
+                links=[]
+                for _,info,triangle in struct.iter_unpack('<IIh2x',observer.read(extra,count*12)) if count else []:
+                    links.append((observer.u32(info) if info else None,triangle))
+                mesh_data[observer.u32(mesh+0xC)]={'offset':offset,'records':records,'links':links}
                 self.mesh_count+=1
         if not self.triangles:raise RuntimeError('No loaded floor triangles')
         self.edges=[set() for _ in self.triangles];self.portals={};owners={}
@@ -88,6 +104,38 @@ class Mesh:
                 midpoint=tuple((edge[0][k]+edge[1][k])/2 for k in range(3))
                 self.portals[a,b]=midpoint;self.portals[b,a]=midpoint
         self.centers=[tuple(sum(v[k] for v in tri)/3 for k in range(3)) for tri in self.triangles]
+        self.declared_links=self.connect_declared_links(mesh_data)
+
+    def connect_declared_links(self,meshes):
+        """Honor external edge topology without joining merely nearby surfaces.
+
+        The low three triangle flag bits select EdgeExtraInfo instead of a
+        same-mesh triangle index. Resolve its NavMeshInfo form id only against
+        meshes loaded in this coordinate frame. Neighboring cell edge vertices
+        can differ slightly; require a close pair of endpoints as validation.
+        Keep directionality as declared by the game.
+        """
+        added=0
+        for data in meshes.values():
+            for index,record in enumerate(data['records']):
+                source=data['offset']+index
+                for side in range(3):
+                    link_index=record[3+side]
+                    if not record[6]&(1<<side) or not 0<=link_index<len(data['links']):continue
+                    ref,neighbor_index=data['links'][link_index];neighbor=meshes.get(ref)
+                    if not neighbor or not 0<=neighbor_index<len(neighbor['records']):continue
+                    target=neighbor['offset']+neighbor_index
+                    a,b=self.triangles[source][side],self.triangles[source][(side+1)%3]
+                    triangle=self.triangles[target]
+                    pairs=[(triangle[i],triangle[(i+1)%3]) for i in range(3)]
+                    pairs+= [(b,a) for a,b in pairs]
+                    other=min(pairs,key=lambda pair:math.dist(a,pair[0])+math.dist(b,pair[1]))
+                    if max(distance(a,other[0]),distance(b,other[1]))>96:continue
+                    if max(abs(a[2]-other[0][2]),abs(b[2]-other[1][2]))>64:continue
+                    if target not in self.edges[source]:
+                        self.edges[source].add(target);added+=1
+                    self.portals[source,target]=tuple((a[k]+b[k])/2 for k in range(3))
+        return added
 
     def nearest(self,point):
         return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+abs(point[2]-self.centers[i][2]),distance(point,self.centers[i])))
@@ -123,7 +171,7 @@ class Mesh:
         while index<len(points):
             chosen=index
             for candidate in range(min(len(points)-1,index+24),index,-1):
-                if distance(anchor,points[candidate])<=1200 and corridor_visible(anchor,points[candidate],corridor):
+                if distance(anchor,points[candidate])<=1200 and corridor_clearance(anchor,points[candidate],corridor):
                     chosen=candidate;break
             result.append(points[chosen]);anchor=points[chosen];index=chosen+1
         return result

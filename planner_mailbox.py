@@ -4,7 +4,7 @@ Advice is scoped to the observed quest stage and expires. The Jev loop keeps
 choosing actions while Astra reads the latest request and writes new advice.
 This module accepts data only, never executable code or requested shell actions.
 """
-import hashlib,json,pathlib,time
+import hashlib,json,os,pathlib,time
 
 ROOT=pathlib.Path(__file__).resolve().parent
 
@@ -12,10 +12,20 @@ def stage_key(state,world):
     payload=[state['player']['cell_id'],world.get('quest'),[o['text'] for o in world.get('objectives',[])]]
     return hashlib.sha256(json.dumps(payload,ensure_ascii=True).encode()).hexdigest()[:20]
 
-def atomic_json(path,value):
-    temporary=path.with_suffix('.next.json')
-    temporary.write_text(json.dumps(value,indent=2),encoding='utf-8')
-    temporary.replace(path)
+def atomic_json(path,value,best_effort=False):
+    path=pathlib.Path(path)
+    temporary=path.with_name(path.name+'.'+str(os.getpid())+'.next')
+    payload=json.dumps(value,indent=2)
+    for attempt in range(8):
+        try:
+            temporary.write_text(payload,encoding='utf-8')
+            temporary.replace(path)
+            return True
+        except PermissionError:
+            if attempt==7:
+                if best_effort:return False
+                raise
+            time.sleep(.025*(attempt+1))
 
 def validated_advice(value,stage,now=None):
     now=time.time() if now is None else now
@@ -33,8 +43,8 @@ class PlannerMailbox:
     def exchange(self,state,world,observation):
         now=time.time();stage=stage_key(state,world)
         if stage!=self.last_stage or now-self.last_publish>=5:
-            atomic_json(self.root/'planner-observation.json',{'version':1,'stage':stage,'observed_at':now,'observation':observation})
-            self.last_stage=stage;self.last_publish=now
+            if atomic_json(self.root/'planner-observation.json',{'version':1,'stage':stage,'observed_at':now,'observation':observation},best_effort=True):
+                self.last_stage=stage;self.last_publish=now
         try:
             advice=validated_advice(json.loads((self.root/'planner-advice.json').read_text(encoding='utf-8')),stage,now)
         except (OSError,ValueError):advice=None

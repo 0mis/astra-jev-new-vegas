@@ -30,6 +30,7 @@ class WorldController:
         self.failures={};self.cooldowns={};self.tick=0
         self.previous_signature=None;self.routing_note=None
         self.objective_since=time.monotonic();self.last_targets={};self.last_target_sample=None
+        self.route_error=None;self.travel_samples=deque()
         self.planner=PlannerMailbox()
         self.travel_memory=TravelMemory()
 
@@ -74,23 +75,29 @@ class WorldController:
             try:
                 player=observer.u32(0x11DEA3C)
                 self.mesh=Mesh(observer,observer.u32(player+0x40))
-                self.routing_note=f'Connected floor geometry loaded from {self.mesh.mesh_count} meshes in {self.mesh.cell_count} cells; manual and direct movement also available.'
+                self.routing_note=f'Floor geometry loaded from {self.mesh.mesh_count} meshes in {self.mesh.cell_count} cells with {self.mesh.declared_links} declared boundary links; manual and direct movement also available.'
             except (OSError,ValueError,RuntimeError) as exc:
                 self.routing_note='Floor route unavailable; direct steering and manual movement remain available: '+str(exc)
 
     def waypoint(self,observer,state,target):
         from navmesh import distance
+        # Exterior streaming can replace the loaded-cell grid while the player
+        # remains in the same cell. Re-read meshes after a partial corridor is
+        # exhausted so the next local segment is not treated as a dead end.
+        if self.route_partial and not self.route_points:
+            self.mesh=None;self.mesh_cell=None;self.route_for=None
         self.ensure_mesh(observer,state)
         if self.mesh is None:return None
         key=(target['ref_id'],tuple(round(x/50) for x in target['position']))
         if self.route_for!=key:
+            self.route_error=None;self.route_partial=False
             try:
                 chain=self.mesh.route(state['player']['position'],target['position'],allow_partial=True)
                 self.route_points=self.mesh.path_points(chain,state['player']['position'])
                 self.route_partial=bool(self.route_points and math.dist(self.route_points[-1][:2],target['position'][:2])>200)
                 self.route_for=key
-            except (OSError,ValueError,RuntimeError):
-                self.route_points=[];self.route_for=key
+            except (OSError,ValueError,RuntimeError) as exc:
+                self.route_points=[];self.route_for=key;self.route_error=str(exc)
         # Arrival must exceed the movement stopping distance (20+15 units),
         # otherwise a waypoint 30-35 units away produces endless empty inputs.
         while self.route_points and distance(state['player']['position'],self.route_points[0])<45:
@@ -105,8 +112,10 @@ class WorldController:
             'forward_left':'Move diagonally forward and left.','forward_right':'Move diagonally forward and right.',
             'look_left':'Turn the view left 30 degrees.','look_right':'Turn the view right 30 degrees.',
             'look_up':'Raise the view 12 degrees.','look_down':'Lower the view 12 degrees.',
-            'jump':'Jump.','sneak':'Toggle crouching/sneaking.','point_of_view':'Switch first/third-person view.',
+            'jump':'Jump in place.','jump_forward':'Jump while moving forward for 0.7 seconds to clear a low rock, ledge or prop.',
+            'sneak':'Toggle crouching/sneaking.','point_of_view':'Switch first/third-person view.',
             'pipboy':'Open the Pip-Boy for equipment, status or quests.',
+            'health':'Inspect exact health and available healing in the Pip-Boy Stats page.',
             'reload':'Reload the equipped weapon.','holster':'Holster/unholster the weapon.',
             'fire':'Fire/attack at the current crosshair.','aim_weapon':'Briefly aim the equipped weapon.',
             'save':'Quicksave the current campaign in its isolated save folder.',
@@ -120,9 +129,9 @@ class WorldController:
             options['route:'+ident]='Navigate toward '+name+' for up to3seconds; use a connected floor route when available, otherwise direct steering.'
             options['direct:'+ident]='Take ONE turn or short step directly toward '+name+' without obstacle routing.'
         disabled=world['disabled_controls']
-        unavailable={'movement':('forward','backward','left','right','forward_left','forward_right','jump'),
+        unavailable={'movement':('forward','backward','left','right','forward_left','forward_right','jump','jump_forward'),
                      'look':('look_left','look_right','look_up','look_down'),
-                     'fight':('fire','aim_weapon','reload','holster'), 'pipboy':('pipboy',),
+                     'fight':('fire','aim_weapon','reload','holster'), 'pipboy':('pipboy','health'),
                      'sneak':('sneak',),'point_of_view':('point_of_view',)}
         for control,keys in unavailable.items():
             if disabled[control]:
@@ -147,14 +156,28 @@ class WorldController:
             kwargs['dy']=max(-350,min(350,round((desired-current_view['pitch'])/self.calibration['pitch_per_dy'])))
         if action not in ('face','shoot') and abs(error)<.12:
             remaining=math.dist(state['player']['position'][:2],destination[:2])-(20 if waypoint else 100)
-            if remaining>15:kwargs.update(keys=['w'],seconds=min(1.2 if action=='route' else .55,max(.05,remaining/300)))
+            if remaining>15:
+                kwargs.update(keys=['w'],seconds=min(1.2 if action=='route' else .55,max(.05,remaining/max(300,state['player'].get('run_speed',300)))))
         return kwargs
+
+    def travel_stalled(self,state,world,now):
+        """Detect returning to the same place despite locally moving/turning."""
+        player=state['player'];key=(player['cell_id'],tuple(o['text'] for o in world['objectives']))
+        if self.travel_samples and self.travel_samples[-1][1]!=key:self.travel_samples.clear()
+        self.travel_samples.append((now,key,tuple(player['position'])))
+        while len(self.travel_samples)>1 and now-self.travel_samples[1][0]>=40:self.travel_samples.popleft()
+        first=self.travel_samples[0]
+        return now-first[0]>=40 and math.dist(first[2][:2],player['position'][:2])<180
 
     def step(self,observer,client,pid,recording,state):
         world=observer.world(state);targets=self.targets(world);self.tick+=1
         self.ensure_mesh(observer,state)
         sig=tuple(obj['text'] for obj in world['objectives'])
         now=time.monotonic()
+        traveling=any(t.get('quest_target') and t.get('distance',0)>500 for t in targets.values())
+        if traveling and not state['player'].get('in_combat') and self.travel_stalled(state,world,now):
+            self.planner.request_help(state,world,'Travel returned to the same area after 40 seconds; inspect the obstacle before resuming')
+            return {'handoff':'Travel made no sustained displacement for 40 seconds. Inspect the obstacle and choose a different corridor.','world':world}
         if sig and sig!=self.previous_signature:
             commentary('Astra','Quest update: '+'; '.join(sig),'public_gameplay_update')
             self.objective_since=now
@@ -183,12 +206,13 @@ class WorldController:
             'movement_available':not world['disabled_controls']['movement'],
             'controls_available':[name for name,disabled in world['disabled_controls'].items() if not disabled],
             'controls_disabled_by_game':[name for name,disabled in world['disabled_controls'].items() if disabled],
-            'player_combat':{key:state['player'].get(key) for key in ('in_combat','weapon_drawn','loaded_ammunition','life_state')},
+            'player_combat':{key:state['player'].get(key) for key in ('in_combat','weapon_drawn','loaded_ammunition','life_state','health_bar_fraction_approx','run_speed')},
             'hud_text':list(dict.fromkeys(x['text'] for m in state['menus'] for x in m['labels']))[-30:],
             'recent_results':list(self.history),'route_support':self.routing_note,
+            'route_error':self.route_error,
             'active_floor_route':{'target_id':self.route_for[0],'local_waypoints_remaining':len(self.route_points),'partial_route':self.route_partial,'next_waypoint':self.route_points[0] if self.route_points else None,'arrival_instruction':'Use actual target distance. A partial route ending requires continued travel, not activation.'} if self.route_for else None,
             'temporarily_ineffective_actions':[key for key,tick in self.cooldowns.items() if tick>self.tick],
-            'telemetry_limit':'Read-only world and UI telemetry. Actor life and current combat targets are observed; health/ammunition, general faction hostility and image vision are not yet supported.',
+            'telemetry_limit':'Read-only world and UI telemetry. HUD health is an approximate tick-bar fraction; exact health and Stimpaks can be inspected through the health action. Loaded ammunition is observed; general faction hostility, reserve inventory and image vision are not yet supported.',
             'guards':'Recording and save isolation enforced. No game console, memory writes, purchases or desktop control.'}
         compact['reusable_skills']=relevant_lessons(world,list(self.history))
         compact['planner_advice']=self.planner.exchange(state,world,compact.copy())
@@ -205,8 +229,8 @@ class WorldController:
         with (ROOT/'world-decisions.jsonl').open('a',encoding='utf-8') as output:
             output.write(json.dumps({'at':time.time(),'request_id':ident,'state':compact,'choice':choice,'answer':answer})+'\n')
         if choice=='assist':
-            self.planner.request_help(state,world,'Jev requested assistance after reviewing controls and recent outcomes')
-            return {'handoff':'Jev requested assistance after reviewing available controls and recent results.','world':world}
+            self.planner.request_help(state,world,'Jev requested planning or controller assistance')
+            return {'handoff':'Jev requested assistance. Inspect its observed state and recent outcomes.','world':world}
         fresh=observer.snapshot()
         if time.time()-state['observed_at']>3 or fresh['player']['cell_id']!=state['player']['cell_id'] or any(m['name'] not in ('hud','tutorial') for m in fresh['menus']):
             return {'discarded':'State changed before input'}
@@ -231,10 +255,12 @@ class WorldController:
             radians=math.pi/6 if axis=='dx' else math.pi/15
             scale=self.calibration['yaw_per_dx' if axis=='dx' else 'pitch_per_dy']
             kwargs[axis]=round(radians/scale)*(-1 if choice in ('look_left','look_up') else 1)
+        elif choice=='jump_forward':
+            kwargs.update(keys=['w','space'],seconds=.7);self.route_for=None
         elif choice in ('fire','aim_weapon'):
             kwargs.update(button='left' if choice=='fire' else 'right',seconds=.25)
         else:
-            keys={'activate':'e','jump':'space','sneak':'ctrl','point_of_view':'f','pipboy':'tab','reload':'r','holster':'r','save':'f5'}
+            keys={'activate':'e','jump':'space','sneak':'ctrl','point_of_view':'f','pipboy':'tab','health':'f1','reload':'r','holster':'r','save':'f5'}
             kwargs.update(keys=[keys[choice]],seconds=.9 if choice=='holster' else .15)
             if choice=='activate':self.mesh_cell=None
         input_count=0;route_until=time.monotonic()+3
@@ -284,7 +310,7 @@ class WorldController:
         before_view=view(fresh,current);after_view=view(after,after_world)
         turned=abs(angle(after_view['yaw']-before_view['yaw']))+abs(after_view['pitch']-before_view['pitch'])
         changed=moved>4 or turned>.015 or fingerprint(fresh,current)!=fingerprint(after,after_world)
-        result={'action':options[choice],'moved_units':round(moved,1),'view_change_radians':round(turned,3),
+        result={'action':options.get(choice,choice),'moved_units':round(moved,1),'view_change_radians':round(turned,3),
                 'changed':changed,'input_sent':executed,'menus':[m['name'] for m in after['menus']]}
         if ':' in choice:
             after_target=self.targets(after_world).get(target_id)
@@ -293,10 +319,14 @@ class WorldController:
             result['route_waypoints_remaining']=len(self.route_points)
             result['partial_floor_route']=self.route_partial
             result['target_loaded']=bool(after_target and after_target['loaded'])
+            result['route_error']=self.route_error if choice.startswith('route:') else None
         self.history.append(result)
         with (ROOT/'world-results.jsonl').open('a',encoding='utf-8') as output:
             output.write(json.dumps({'at':time.time(),'request_id':ident,'choice':choice,**result})+'\n')
-        if changed:
+        # A completed turn is useful; movement held against a wall is not.
+        attempted_walk=bool(kwargs.get('keys'))
+        effective_changed=changed and (not choice.startswith('route:') or not attempted_walk or moved>=40)
+        if effective_changed:
             self.no_change_since=time.monotonic();self.no_change_count=0;self.failures[choice]=0
         else:
             self.no_change_count+=1;self.failures[choice]=self.failures.get(choice,0)+1

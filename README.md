@@ -4,6 +4,9 @@ A work in progress: Jev selects frequent typed actions, Astra develops and super
 
 ## Verified progress
 
+- September 22: the saved campaign and all 50 original save backups passed hash checks. Jev reached the western approach to Primm. The main story is still early; the ending has not been reached.
+- Recovery work removed a fallback that silently repeated failed travel after Jev requested help. Assistance now hands control back to the planner. Net displacement catches travel oscillations, and locked status files retain their previous complete contents.
+- Exterior routing now resolves validated, game-declared links between loaded floor meshes. One live route gained 744 boundary connections and let Jev pass the northern fence. Shortcut checks also require lateral clearance. Physical props can still obstruct the floor route; a stone post and wrecked bus required planner recovery.
 - Jev completed the recorded opening prompts, default character creation and most attribute allocation; Astra supplied one Perception increment during calibration.
 - Normal keyboard and measured relative mouse input walked to and activated the Vigor Tester. A read-only floor mesh route then took the character around an interior wall to the couch, which it activated successfully.
 - The opening-room navigation pilot reads quest targets, loaded references, crosshair identity and actual camera position. This is game telemetry, not image recognition. No game-memory writes, console commands, teleportation or quest cheats are used.
@@ -67,7 +70,9 @@ For a quest actor in an unloaded interior, the observer can follow bounded paire
 
 Partial route endpoints are explicitly distinguished from arrival, and decisions include the destination's actual distance and whether it is loaded. This fixed a verified travel loop on the way to Primm. Straight movement holds may last up to1.2seconds within each route skill, with observation checks for a menu, cell transition or newly entered combat. Player combat state, drawn-weapon state and loaded ammunition are read from the documented process fields; the ammunition reading matched the visible HUD during validation. Broader combat reliability remains unverified.
 
-`pipboy_controller.py` lets Jev select an active journal quest, navigate Data tabs with normal keys, verify the tracked quest and close the Pip-Boy. Equipment management and other Pip-Boy features are not implemented yet. Dialogue navigation moves the mouse clear before arrow scrolling, verifies the chosen row and clicks it normally. Ready answer lists no longer offer unnecessary waiting; a local `menu-history.json` preserves recent outcomes across controller restarts.
+`pipboy_controller.py` lets Jev select an active journal quest, navigate Data tabs with normal keys, verify the tracked quest and close the Pip-Boy. The Stats interface also reads displayed health and Stimpak count and supports one verified Stimpak action when injured. This healing path still needs live validation. General equipment management is not implemented yet. Dialogue navigation moves the mouse clear before arrow scrolling, verifies the chosen row and clicks it normally. Ready answer lists no longer offer unnecessary waiting; a local `menu-history.json` preserves recent outcomes across controller restarts.
+
+Run `python -m unittest test_recovery -q` for regression checks covering atomic status publication, travel stalls, route cooldowns, declared mesh boundaries and shortcut clearance. These checks supplement live validation; they do not establish unattended campaign completion.
 
 `observe_game.py`, `navmesh.py`, `world_controller.py` and `vigor_controller.py` implement read-only observations and the tutorial pilot. `jev_bridge.py`, `jev_loop.py` and `game_input.py` implement decisions and bounded normal execution. `record_game.py` and `decide_game.py` implement recording and health gates. `benchmark_jev.py` performs read-only latency samples. The launchers are optional local credential loaders.
 

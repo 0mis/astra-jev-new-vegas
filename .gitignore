@@ -52,3 +52,9 @@ pipboy-decisions.jsonl
 pending-publication.json
 public-publication.json
 save-checkpoint-*.json
+checkpoints/
+repair-backups/
+*.next
+*-audit.json
+*-inspection-*.json
+controller.stop.consumed*

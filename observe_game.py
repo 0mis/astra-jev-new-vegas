@@ -87,6 +87,10 @@ class Observer:
       ammo=self.u32(process+0x118)
       count=self.u32(ammo+4) if ammo else None
       if count is not None and count<=100000:out['player']['loaded_ammunition']=count
+      cache=self.u32(process+0x2C)
+      if cache and self.u32(cache+0x44)&0x2000:
+       speed=self.floats(cache+0x3C,1)[0]
+       if math.isfinite(speed) and 0<speed<2000:out['player']['run_speed']=speed
    except (OSError,ValueError):out["player"]=None
   base=self.u32(0x11F350C);menus=[]
   out['interface_mode']=self.u32(self.u32(0x11D8A80)+0xC)
@@ -99,6 +103,15 @@ class Observer:
     menus.append({"id":ident,"name":name,"labels":self.walk(tile) if tile else []})
    except (OSError,ValueError):continue
   out["menus"]=menus
+  try:
+   if out.get('player') and any(m['name']=='hud' for m in menus):
+    hud=self.u32(0x11D96C0);name,values=self.tile(self.u32(hud+0x2C))
+    width=values.get(0xFB1);texture=values.get(0xFCC,'')
+    # Vanilla HUD template: 300-unit bar quantized to eight-unit tick marks.
+    # This is a display estimate, not an exact actor health value.
+    if name=='meter' and str(texture).lower().endswith('hud_tick_mark.dds') and isinstance(width,(float,int)) and 0<=width<=300:
+     out['player']['health_bar_fraction_approx']=round(min(1,(width+4)/300),3)
+  except (OSError,ValueError):pass
   out["read_ms"]=round((time.perf_counter()-start)*1000,2)
   return out
 

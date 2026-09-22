@@ -4,6 +4,7 @@ from observe_game import Observer
 from decide_game import recording_health
 from game_input import act, foreground_pid, pause_world, point_cursor
 from jev_bridge import JevClient, commentary
+from planner_mailbox import atomic_json
 
 ROOT = pathlib.Path(__file__).resolve().parent
 
@@ -61,9 +62,8 @@ def surface_signature(state):
 
 def write_status(status):
     status['updated_at'] = time.time()
-    temporary = ROOT / 'loop-status.next.json'
-    temporary.write_text(json.dumps(status, indent=2), encoding='utf-8')
-    temporary.replace(ROOT / 'loop-status.json')
+    # A busy reader must never receive a truncated direct-write fallback.
+    return atomic_json(ROOT/'loop-status.json',status,best_effort=True)
 
 def run(pid, recording, seconds, world_enabled=False):
     observer, client = Observer(pid), JevClient()
@@ -111,6 +111,7 @@ def run(pid, recording, seconds, world_enabled=False):
                 status.update(phase='autonomous_world_choices',last_world_result=result)
                 if result.get('choice'):
                     status['decisions']+=1;status['inputs']+=result.get('input_count',int(result.get('input_sent',True)))
+                    status['last_choice']=result['choice']
                 if result.get('handoff'):
                     status.update(state='needs_planner',reason=result['handoff']);break
                 write_status(status);time.sleep(.15);continue
@@ -133,11 +134,17 @@ def run(pid, recording, seconds, world_enabled=False):
             if repeated >= 6:
                 raise RuntimeError('Repeated unchanged menu; stopped for inspection')
             campaign_loaded=bool((state.get('player') or {}).get('cell_id'))
+            if any(m['name']=='start' for m in state['menus']) and not campaign_loaded:
+                status.update(state='needs_planner',reason='At title menu: load the verified isolated campaign before resuming; never automatically start a new game.')
+                break
             options = {str(i): x['text'] for i, x in enumerate(items)
                        if '/main_container/' not in x['path'] or x['text']==('Continue' if campaign_loaded else 'New')}
             # Menus with selectable answers are ready for input. Speech and
             # animations without controls already wait above without API calls.
-            options['assist'] = 'Ask Astra for planning, a missing control or recovery when helpful'
+            # A loaded campaign at Start/Continue has one useful action. Do
+            # not spend a Jev decision asking for help before resuming it.
+            if not (campaign_loaded and any(m['name']=='start' for m in state['menus'])):
+                options['assist'] = 'Ask Astra for planning, a missing control or recovery when helpful'
             compact = {'objective': 'Finish the fresh recorded Fallout: New Vegas main story. You own dialogue, character build and gameplay choices. Choose a coherent approach and adapt from results. Preserve this campaign and never load pre-existing saves.',
                        'visible_menu': texts, 'recording_verified': True,
                        'current_campaign_paused':any(m['name']=='start' for m in state['menus']),
@@ -201,6 +208,7 @@ def run(pid, recording, seconds, world_enabled=False):
                     else:
                         key = 'up' if highlighted and highlighted['y'] > selected['y'] else 'down'
                 activating = key in ('enter', 'e')
+                start_resume = activating and selected['path'].startswith('/StartMenu/') and selected['text']=='Continue'
                 dialogue_click=activating and selected['path'].startswith(('/DialogMenu/','/CharGenMenu/','/TraitMenu/','/MessageMenu/'))
                 if dialogue_click:
                     # The tested 1280x720 client uses a 4:3 virtual UI scale of .75.
@@ -216,7 +224,7 @@ def run(pid, recording, seconds, world_enabled=False):
                              button='left' if dialogue_click else None,
                              seconds=.12 if dialogue_click else 1.0 if key == 'enter' else .12,
                              request_id=f'{request_id}:{step}', actor='Jev',
-                             stop_when=(lambda observed: surface_signature(observed) != activation_sig)
+                             stop_when=(lambda observed: (observed.get('interface_mode')!=state.get('interface_mode')) or surface_signature(observed) != activation_sig)
                              if activating else None)
                 status['inputs'] += 1
                 fresh = result['after']
@@ -230,14 +238,13 @@ def run(pid, recording, seconds, world_enabled=False):
                     # Some dialogue transitions begin after key release or speech.
                     # Wait for acknowledgement without sending the input twice.
                     acknowledge_until=time.monotonic()+3
-                    while surface_signature(fresh)==activation_sig and time.monotonic()<acknowledge_until:
+                    while ((fresh.get('interface_mode')==state.get('interface_mode')) and surface_signature(fresh)==activation_sig) and time.monotonic()<acknowledge_until:
                         time.sleep(.1);fresh=observer.snapshot()
                     if surface_signature(fresh) == activation_sig:
                         recent_menus.append({'selected':chosen['text'],'result':'No visible menu change after input and three-second acknowledgement wait. Choose recovery or another option.'})
                     else:
                         recent_menus.append({'selected':chosen['text'],'result':'Menu changed'})
-                    from planner_mailbox import atomic_json
-                    atomic_json(ROOT/'menu-history.json',{'pid':pid,'updated_at':time.time(),'results':recent_menus[-8:]})
+                    atomic_json(ROOT/'menu-history.json',{'pid':pid,'updated_at':time.time(),'results':recent_menus[-8:]},best_effort=True)
                     break
             else:
                 raise RuntimeError('Menu navigation did not reach the selected item')
