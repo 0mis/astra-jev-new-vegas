@@ -1,87 +1,67 @@
 # Astra + Jev: Fallout: New Vegas
 
-A work in progress: Jev selects frequent typed actions, Astra develops and supervises the controller, and local recording preserves gameplay. The campaign is **not complete**, and this is not yet an unattended full-game player.
+The Jev/Astra team completed an independent New Vegas main-story run on September 23, 2026. The ending slideshow and credits were observed and recorded. Jev made frequent bounded gameplay choices; Astra developed the controller, planned routes, diagnosed loops and crashes, and handled recoveries. When the local Jev ledger reached its $1 cap, Astra completed the remaining combat and final conversations using ordinary game input.
 
-## Verified progress
+This is the source of that supervised run. It is not a one-command unattended game player. The campaign required substantial development and intervention. The complete video edit and its mandatory privacy review are still in progress; there is no final video link yet.
 
-- September 22: the saved campaign and all 50 original save backups passed hash checks. Jev reached the western approach to Primm. The main story is still early; the ending has not been reached.
-- Recovery work removed a fallback that silently repeated failed travel after Jev requested help. Assistance now hands control back to the planner. Net displacement catches travel oscillations, and locked status files retain their previous complete contents.
-- Exterior routing now resolves validated, game-declared links between loaded floor meshes. One live route gained 744 boundary connections and let Jev pass the northern fence. Shortcut checks also require lateral clearance. Physical props can still obstruct the floor route; a stone post and wrecked bus required planner recovery.
-- Routes now retain their remaining waypoints across exterior cell boundaries. This stopped an observed reversal loop while circling the bus. Optional local `navigation-obstacles.json` rectangles penalize routes through actually observed obstructions; they are scoped to observed cells or worldspace and do not alter the game.
-- The earlier SoundCard capture path requests Windows multimedia scheduling. Isolated driver warnings are preserved with their timestamps. Fresh video/audio encoding, bounded timeline difference and a guard against repeated glitches determine whether play can continue; this does not establish lossless or gap-free audio.
-- Jev completed the recorded opening prompts, default character creation and most attribute allocation; Astra supplied one Perception increment during calibration.
-- Normal keyboard and measured relative mouse input walked to and activated the Vigor Tester. A read-only floor mesh route then took the character around an interior wall to the couch, which it activated successfully.
-- The opening-room navigation pilot reads quest targets, loaded references, crosshair identity and actual camera position. This is game telemetry, not image recognition. No game-memory writes, console commands, teleportation or quest cheats are used.
-- Jev completed Doc Mitchell's opening and discharge, Sunny's shooting and well exercises, and the Trudy conversation that finishes Back in the Saddle. It returned to the saloon using remembered entrances, tracked They Went That-a-Way through normal Pip-Boy input and began the main-story journey. Suggested Guns, Sneak and Speech tags were accepted before the broader autonomy policy was introduced. General combat, later menus and the main-story ending remain unverified.
-- A six-request benchmark measured a 193.5 ms warm Jev median over five warm calls, with a 505.5 ms cold request. These are decision latencies, not gameplay frame rates.
-- The corrected 45-second capture pilot decoded 45.53 seconds of 720p30 video and 45.035 seconds of stereo audio, with zero reported audio discontinuities and clean encoder exits. Whole-campaign reliability is not established.
-- Two later segments each reported one audio discontinuity during paused intermissions. Those segments and warnings are preserved. An earlier recorder moved disk/window checks and status publication away from audio capture, used a two-second buffer, and passed a 45-second decoded pilot (45.433 seconds video,45.035 seconds audio) with zero warnings. This does not establish gap-free long-duration capture.
+## What was verified
 
-The latest recording backend uses PyAudioWPatch speaker loopback callbacks, with an explicit loopback-device check and bounded queues. A20-second probe delivered20.0seconds over2000callbacks with no reported callback status errors. The subsequent campaign recording has fresh encoding progress. Prior SoundCard recordings reported discontinuities and remain preserved; callback success in a short probe does not establish long-run reliability. Audio and video health gates remain active.
+- Fresh character creation and the Goodsprings tutorial, the lead to Benny, the Platinum Chip, Mr. House, Yes Man, all five Side Bets contacts, El Dorado, Hoover Dam and the independent ending.
+- Lanius and General Oliver were persuaded to withdraw through Speech dialogue. The final pre-ending checkpoint was level 9 with Speech 100 and Guns 78.
+- Normal keyboard/mouse controls performed movement, interaction, aiming, VATS, dialogue, inventory, fast travel, sleeping and saving. The observer reads version-specific game telemetry and navigation geometry. It does not write game memory, invoke game functions, teleport, issue console commands or force quest stages.
+- Crashes, failed routes, deaths and restored attempts occurred. Original recordings and recovery saves were retained privately. Recording interruptions and audio warnings exist; do not describe the capture as gap-free.
+- All 147 included regression tests passed in the Windows development environment on September 23. They cover observed failure modes, not proof of universal or unattended completion.
 
-The current campaign uses **Very Easy** difficulty, selected through the normal settings menu after early combat deaths. This must be disclosed with any published run. The campaign is still incomplete.
+About 24 hours across recorded sessions (approximately 23h55m50s) span the fresh-new-game confirmation through the verified ending. This includes recorded pauses, retries and control setup, with overlap removed and long unrecorded breaks excluded. It is not pure active gameplay or edited runtime. Jev's conservative local ledger finished near $0.99891, including unresolved reservations; that is not a provider invoice or the total cost of Jev plus Astra.
 
-## Requirements and credentials
+## Setup
 
-Windows, Python 3.12, an owned Steam copy of Fallout: New Vegas 1.4.0.525 and Typesafe API access. Install `requirements.txt` into `.venv`. Layouts are version-specific; modified executables or mods can invalidate them.
-
-The client reads `TYPESAFE_API_KEY` from its environment. The optional PowerShell launchers load Windows-user DPAPI ciphertext from `typesafe-key.dpapi`:
+Use Windows, Python 3.12, an owned Steam installation of Fallout: New Vegas 1.4.0.525, and your own Typesafe access. The observer verifies the expected executable; its default installation path is in `observe_game.py`. Other executables, patches, mods and installation paths require explicit adaptation and validation.
 
 ```powershell
-$jevSecret = Read-Host 'Typesafe API key' -AsSecureString
-$jevSecret | ConvertFrom-SecureString | Set-Content -LiteralPath .\typesafe-key.dpapi
-$jevSecret = $null
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m unittest discover -p 'test_*.py' -q
 ```
 
-One client owns a durable local $1 test ledger. It reserves a conservative cost before dispatch, settles successful requests using reported input-token usage and retains reservations for uncertain requests. Legacy ledger entries remain conservative. There are no purchases, top-ups or automatic network retries. Other API clients and account billing are outside this ledger.
+Back up your saves and settings before playing. The optional `repair_input_settings.ps1` makes backups and configures the dedicated `JevSaves` path and keyboard/mouse input while the game is closed. Verify settings after launching: the launcher can regenerate them. The recorded campaign starts on Normal and changes to Very Easy during the Primm attempts; Hardcore mode is off. Crashes and restored settings occurred, so do not label the entire run as one difficulty.
 
-## Recording and input
+The client reads `TYPESAFE_API_KEY` from its process environment. Optional PowerShell launchers can read local Windows-user DPAPI ciphertext from `typesafe-key.dpapi`. Never commit credentials, encrypted credentials, logs, saves or recordings. The $1 client ledger reserves budget before a request, settles confirmed usage and preserves uncertain reservations. No automatic purchases, top-ups or network retries are implemented. Do not erase an existing ledger to resume a capped run.
 
-Back up existing saves first. The local pilot uses a separate `JevSaves` path. `repair_input_settings.ps1` backs up both game INIs and sets that path, `bUse Joystick=0` and `bDisable360Controller=1` while the game is closed. The launcher can regenerate settings, so verify them again afterward.
+## Running the supervised controller
+
+The game must be foreground with one input owner. Each new recorder requires a unique directory. Verify real video and audible game playback before allowing inputs.
 
 ```powershell
 $nvPid = (Get-Process FalloutNV).Id
-# A new session directory is required. Capture binds to the PID and exact HWND.
-.\.venv\Scripts\python.exe .\record_game.py --title 'Fallout: New Vegas' --game-pid $nvPid --session .\recordings\run-001 --seconds 3600
-# In another terminal, after verifying real recorded video and sound:
-.\start_jev_loop.ps1 -GamePid $nvPid -RecordingFolder .\recordings\run-001 -Seconds 300
+.\.venv\Scripts\python.exe record_game.py --title 'Fallout: New Vegas' --game-pid $nvPid --session recordings/run-001 --seconds 3600 --max-video-kbps 2500 --audio-format aac --audio-backend wasapi_callback
 ```
 
-The default recording is segmented H.264/MKV at 720p30, a 1500 kbps video ceiling, and separate AAC stereo audio at 128 kbps. WAV is optional. A bounded queue separates audio capture from encoding. Audio is system playback loopback, never microphone input; other applications' sounds can be included. The estimated 72-hour encoded payload is about 49.1 GiB before overhead. A 5 GiB free-space reserve stops capture. This size estimate is not a long-duration reliability test.
+Run the independent `loop_watchdog.py` observer before `start_jev_loop.ps1`. Read each command's `--help` and the launcher parameters. The planner supplies scoped, expiring advice and observed destinations; none of the private campaign plans or saved route history is included. Never guess stale process IDs, window handles, worldspace coordinates or current quest state.
 
-Keep the game foreground and unobscured during play; background capture has not been validated. Inputs require matching game/recording identity, fresh advancing video and audio encoding counters, a video/audio timeline difference within two seconds, fewer than three discontinuity warnings within thirty seconds, and exclusive controller ownership. Held inputs are released on errors. At handoff, the loop tries normal Escape only in a recognized gameplay state and verifies the pause menu. Unsupported menus or lost focus can prevent that pause; inspect the result rather than assuming success.
+Inputs are guarded by fresh recording progress, process identity, focus, stop files and an exclusive input lock. Keys release on failures. The watchdog observes sustained stalls, room cycles and menu loops, requests a handoff, and never sends competing inputs. A recovery requires fresh observation and a changed plan; restarting the same loop is not recovery.
 
-Create `controller.stop` beside the scripts to request a controller stop. To finalize recording, create `stop.request` inside its session directory and verify clean exits, audio finalization, warnings and decoded content. Preserve original segments, timestamps and logs for later editing.
+`astra_route_run.py` and `astra_dialogue.py` provide bounded supervised normal-input helpers. The dialogue helper verifies speaker, exact topic and hover before selection; an offscreen topic must be scrolled into view first. These tools still require active human or planner judgment.
 
-## Jev world controls
+## Components
 
-Once ordinary unpaused gameplay is recorded, run the small camera calibration, then enable world controls:
+- `observe_game.py`, `navmesh.py`, `portal_atlas.py`: read-only telemetry, loaded-reference checks, floor routing and observed door links.
+- `world_controller.py`, `planner_destination.py`, `course_traversal.py`, `travel_memory.py`: scoped travel, multi-stage routes and progression checks.
+- `jev_bridge.py`, `jev_loop.py`, `decision_context.py`: typed Jev choices, local budget accounting and compact decision context.
+- `game_input.py`, `combat_guard.py`, `vats_controller.py`, menu controllers: bounded input, near-range explosive protection, VATS and observed UI selection.
+- `loop_watchdog.py`, `damage_watch.py`, `campaign_checkpoint.py`: independent supervision, injury detection and protected ordinary saves.
+- `record_game.py`, `loopback_audio.py`, `capture_progress.py`: window video, system playback audio, finalization and advancing-counter checks.
+- `media_inventory.py`, `transcribe_recordings.py`: private full-decode inventory and local machine transcripts for review. Install `requirements-postproduction.txt` for these tools. Neither decoding nor transcription constitutes a privacy review or permission to publish.
+- `detect_pause_frames.py`, `scan_timeline_menus.py`: template-based pause candidates and a supplemental check of every retained frame for observed submenus. Unrecognized menus and false matches remain possible; review the proposed cuts.
+- `build_story_timeline.py`, `apply_story_editorial.py`, `render_story_draft.py`: campaign-specific rough-cut construction, traceable public commentary, chapter metadata and private rendering. The renderer offers CPU H.264 and optional NVIDIA NVENC, normalizes intermediate audio to FLAC s16 and verifies decoded audio/video durations after assembly.
+- `review_frames.py`, `scan_review_text.py`: timestamped review samples and explicitly sampled local OCR. These are review aids, not complete visual/audio review. See `POSTPRODUCTION.md` for data requirements and limitations.
 
-```powershell
-.\.venv\Scripts\python.exe .\calibrate_mouse.py --pid $nvPid --recording .\recordings\run-001
-.\start_jev_loop.ps1 -GamePid $nvPid -RecordingFolder .\recordings\run-001 -Seconds 300 -World
-```
+The final edit will remove pauses and waiting, label acceleration, preserve the main story and ending, and use actual public gameplay commentary or clearly labeled retrospective narration. Private reasoning transcripts, invented quotes, personal information and unreviewed footage are excluded from publication.
 
-Calibration moves the view slightly and writes a machine-specific `mouse-calibration.json`. Jev chooses nearby targets, floor routes or direct approaches, normal movement and looking, interactions, weapon controls, dialogue and recoveries. Recent outcomes and disabled-control flags are part of each decision. Repeated ineffective actions temporarily cool down, with Astra assistance for sustained stalls or missing interfaces. Ordinary choices do not require planner approval.
+## Limitations and provenance
 
-The current optimization uses bounded route skills, useful action filtering and nonblocking planning advice. Route execution can perform up to three seconds of observed normal steering per Jev choice. The planner mailbox scopes advice to the observed quest stage and ignores expired or mismatched plans. It uses the existing Codex task; it does not start a second planner API client. Reusable recovery lessons describe actual controller failures. See ARCHITECTURE.md and THIRD_PARTY.md for the design reference.
+The controller relies on game telemetry, not only screenshots. Navigation meshes omit some props and can connect the wrong floor unless carefully scoped. Dialogues may scroll, scripted scenes temporarily disable controls, and observer state can change during reads. Actor targeting requires an actual rendered actor. The code is version-specific and still needs supervision.
 
-Floor routing joins matching triangle edges across loaded meshes and exterior cells. The observer distinguishes interior coordinate frames, follows paired door destinations, reads both ends of door locks and exposes the active journal. Persistent-cell metadata retains a distant quest target's coordinate frame. A partial route can approach an objective beyond the currently connected floor. Straight shortcuts require continuous floor-triangle and height coverage; geometry tests cover missing floor, different elevation and a blocked corner. One sampled route reduced21waypoints to3 in0.208seconds of calculation; this is not a whole-run speed benchmark.
+The recording is game-window video plus system playback loopback, not microphone input. Other applications' audio can enter loopback. Full footage/audio review and review of the actual final export, captions, thumbnails and metadata remain necessary before publication. Samples or a successful decode are insufficient.
 
-The aiming skill uses an observed rendered-object center and bounded normal mouse corrections. Jev can choose a tracked shooting burst lasting up to three seconds or built-in VATS targeting. Single shots consumed ammunition in live combat; the new burst still needs effectiveness validation. VATS queued and executed two torso shots, after which fresh telemetry confirmed the attacking gecko was dead. It previously completed the bottle lesson. Actor life state and current combat targets support a preliminary combat interface; health, ammunition, broader faction hostility, later menus and full-game reliability remain unfinished. Read `loop-status.json` before resuming. Logged action IDs do not yet provide durable duplicate-action rejection: never blindly replay an uncertain action.
-
-`travel_memory.py` remembers previously observed exterior entrances in a local `travel-landmarks.json`. This lets a return trip target a known building after its exterior leaves the loaded grid. Memories are restricted to their observed worldspace, labeled as remembered in decisions, and superseded by live door observations on arrival. The per-run landmark file is excluded from the repository.
-
-For a quest actor in an unloaded interior, the observer can follow bounded paired-door links outward to the entrance in the current worldspace. It verified the Primm casino entrance for Johnson Nash without mixing interior coordinates with the exterior. This is read-only game telemetry, not screen vision or movement by teleportation.
-
-Partial route endpoints are explicitly distinguished from arrival, and decisions include the destination's actual distance and whether it is loaded. This fixed a verified travel loop on the way to Primm. Straight movement holds may last up to1.2seconds within each route skill, with observation checks for a menu, cell transition or newly entered combat. Player combat state, drawn-weapon state and loaded ammunition are read from the documented process fields; the ammunition reading matched the visible HUD during validation. Broader combat reliability remains unverified.
-
-`pipboy_controller.py` lets Jev select an active journal quest, navigate Data tabs with normal keys, verify the tracked quest and close the Pip-Boy. The Stats interface also reads displayed health and Stimpak count and supports one verified Stimpak action when injured. Live validation confirmed displayed health rising from76/240 to full health using normal Stimpak input; counts came from the displayed Stats label. The equipment interface lets Jev inspect and equip owned weapons and armor with normal arrow/Enter input and verifies the visible equipped marker. It equipped the Armored Vault13 Jumpsuit during a live test. Healing now keeps the menu open between doses so Jev can reassess before returning to danger. Item dropping, repair and general consumable management remain unsupported. Dialogue navigation moves the mouse clear before arrow scrolling, verifies the chosen row and clicks it normally. Ready answer lists no longer offer unnecessary waiting; a local `menu-history.json` preserves recent outcomes across controller restarts.
-
-Run `python -m unittest test_recovery -q` for regression checks covering atomic status publication, travel stalls, route cooldowns, declared mesh boundaries and shortcut clearance. Seventeen checks pass. These checks supplement live validation; they do not establish unattended campaign completion.
-
-`observe_game.py`, `navmesh.py`, `world_controller.py` and `vigor_controller.py` implement read-only observations and the tutorial pilot. `jev_bridge.py`, `jev_loop.py` and `game_input.py` implement decisions and bounded normal execution. `record_game.py` and `decide_game.py` implement recording and health gates. `benchmark_jev.py` performs read-only latency samples. The launchers are optional local credential loaders.
-
-The eventual video will use timestamped public gameplay commentary and actual selected actions, not private reasoning transcripts or invented Jev quotations. Editing and YouTube/X publication follow a verified ending; neither has been completed for this campaign.
-
-Original code is MIT-licensed. Secrets, personal data, game assets, saves and third-party source bundles are excluded. See THIRD_PARTY.md for layout and dependency sources. This independent experiment is not affiliated with Bethesda, Obsidian, Typesafe or OpenAI.
+See `ARCHITECTURE.md` and `THIRD_PARTY.md` for design and layout research, including the user-supplied Minecraft agent reference. The implementation is original. No game assets, saves, recordings, dependency binaries or credentials are distributed. The MIT license covers this repository's original source and documentation only.

@@ -23,7 +23,9 @@ def triangle_distance(point,vertices):
     a,b,c=vertices
     def cross(u,v,p):return (v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0])
     signs=[cross(a,b,point),cross(b,c,point),cross(c,a,point)]
-    if all(s>=-.001 for s in signs) or all(s<=.001 for s in signs):return 0
+    # A collapsed or vertical triangle has no horizontal interior. Its zero
+    # cross products must not make every distant map destination look inside.
+    if abs(cross(a,b,c))>.001 and (all(s>=-.001 for s in signs) or all(s<=.001 for s in signs)):return 0
     distances=[]
     for u,v in ((a,b),(b,c),(c,a)):
         dx,dy=v[0]-u[0],v[1]-u[1];den=dx*dx+dy*dy
@@ -116,7 +118,28 @@ class Mesh:
                 midpoint=tuple((edge[0][k]+edge[1][k])/2 for k in range(3))
                 self.portals[a,b]=midpoint;self.portals[b,a]=midpoint
         self.centers=[tuple(sum(v[k] for v in tri)/3 for k in range(3)) for tri in self.triangles]
+        self.internal_links=self.connect_internal_links(mesh_data)
         self.declared_links=self.connect_declared_links(mesh_data)
+
+    def connect_internal_links(self,meshes):
+        """Honor same-mesh neighbors even where more than two triangles overlap."""
+        added=0
+        for data in meshes.values():
+            for index,record in enumerate(data['records']):
+                source=data['offset']+index
+                for side in range(3):
+                    neighbor=record[3+side]
+                    if record[6]&(1<<side) or not 0<=neighbor<len(data['records']):continue
+                    target=data['offset']+neighbor
+                    if target==source:continue
+                    a,b=self.triangles[source][side],self.triangles[source][(side+1)%3]
+                    triangle=self.triangles[target]
+                    pairs=[(triangle[i],triangle[(i+1)%3]) for i in range(3)]
+                    pairs += [(y,x) for x,y in pairs]
+                    if not any(max(math.dist(a,x),math.dist(b,y))<=.01 for x,y in pairs):continue
+                    if target not in self.edges[source]:self.edges[source].add(target);added+=1
+                    self.portals[source,target]=tuple((a[k]+b[k])/2 for k in range(3))
+        return added
 
     def connect_declared_links(self,meshes):
         """Honor external edge topology without joining merely nearby surfaces.
@@ -149,11 +172,13 @@ class Mesh:
                     self.portals[source,target]=tuple((a[k]+b[k])/2 for k in range(3))
         return added
 
-    def nearest(self,point):
-        return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+abs(point[2]-self.centers[i][2]),distance(point,self.centers[i])))
+    def nearest(self,point,ignore_height=False):
+        return min(range(len(self.triangles)),key=lambda i:(triangle_distance(point,self.triangles[i])+(0 if ignore_height else abs(point[2]-self.centers[i][2])),distance(point,self.centers[i])))
 
-    def route(self,origin,target,allow_partial=False,avoid=()):
-        start,finish=self.nearest(origin),self.nearest(target)
+    def route(self,origin,target,allow_partial=False,avoid=(),flat_target=False):
+        # World-map placements have XY coordinates but no ground elevation.
+        # Their zero Z must not pull the route toward lower, unrelated terrain.
+        start,finish=self.nearest(origin),self.nearest(target,ignore_height=flat_target)
         costs={start:0};parents={};queue=[(0,start)]
         while queue:
             _,node=heapq.heappop(queue)
@@ -169,7 +194,7 @@ class Mesh:
                     costs[neighbor]=cost;parents[neighbor]=node
                     heapq.heappush(queue,(cost+distance(self.centers[neighbor],self.centers[finish]),neighbor))
         if allow_partial:
-            closest=min(costs,key=lambda i:math.dist(self.centers[i],target))
+            closest=min(costs,key=lambda i:distance(self.centers[i],target) if flat_target else math.dist(self.centers[i],target))
             if distance(self.centers[closest],target)+50<distance(origin,target):
                 chain=[closest]
                 while closest in parents:closest=parents[closest];chain.append(closest)

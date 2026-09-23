@@ -28,14 +28,15 @@ def game_window(pid, title):
 
 def write_state(folder,state):
     tmp=folder/"session.next.json"
-    for retry in range(4):
+    payload=json.dumps(state,indent=2)
+    for retry in range(10):
         try:
-            tmp.write_text(json.dumps(state,indent=2),encoding="utf-8")
+            tmp.write_text(payload,encoding="utf-8")
             tmp.replace(folder/"session.json")
             return
         except PermissionError:
-            if retry==3:raise
-            time.sleep(.05)
+            if retry==9:raise
+            time.sleep(min(.2,.05*(retry+1)))
 
 def main():
     p=argparse.ArgumentParser()
@@ -109,10 +110,21 @@ def main():
             # Filesystem checks and JSON publication can briefly block on Windows.
             # Keep them away from the audio capture thread and its finite buffer.
             try:
+                last_timing=0
                 while not monitor_stop.wait(.5):
                     if game_window(args.game_pid,args.title)[0]!=hwnd:raise RuntimeError('The recorded game window changed')
                     if shutil.disk_usage(folder).free<5*1024**3:raise RuntimeError('Recording stopped at 5GiB free-space reserve')
-                    write_state(folder,state.copy())
+                    sample=state.copy()
+                    if time.monotonic()-last_timing>=1 and sample.get('audio_packet_at'):
+                        with (folder/'capture-timing.jsonl').open('a',encoding='utf-8') as timing:
+                            timing.write(json.dumps({'at':time.time(),'audio_packet_at':sample['audio_packet_at'],
+                                'audio_frames':sample['audio_frames']})+'\n')
+                        last_timing=time.monotonic()
+                    try:write_state(folder,sample)
+                    except PermissionError:
+                        # A reader or Windows scanner can temporarily deny rename.
+                        # Preserve capture; stale status independently stops input.
+                        state['status_publication_delays']=state.get('status_publication_delays',0)+1
             except BaseException as exc:monitor_errors.append(str(exc))
         monitor=threading.Thread(target=monitor_capture,daemon=True);monitor.start()
         # Ask Windows to schedule this capture thread as an audio task. This
@@ -156,7 +168,8 @@ def main():
                     audio_queue.put_nowait(pcm)
                 else:audio.writeframes(pcm)
                 n+=len(samples)
-                state["audio_frames"]+=len(samples);state["audio_packets"]+=1
+                state.update(audio_frames=state['audio_frames']+len(samples),audio_packet_at=time.time())
+                state["audio_packets"]+=1
                 state["audio_peak"]=max(state["audio_peak"],float(np.abs(samples).max()))
                 state.update(state="recording",last_update=time.time())
             state["stop_reason"]="stop_requested" if (folder/"stop.request").exists() else "duration_limit"

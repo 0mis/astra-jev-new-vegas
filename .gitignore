@@ -65,3 +65,12 @@ loopback-probe.json
 probe_loopback.py
 
 equipment-decisions.jsonl
+
+# Private postproduction and campaign evidence
+postproduction/
+ending-evidence/
+screenshots/
+*.partial.json
+media-audit.jsonl
+main-story-completion.json
+source-preparation.json

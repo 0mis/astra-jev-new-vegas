@@ -5,6 +5,9 @@ from jev_bridge import commentary
 
 ROOT=pathlib.Path(__file__).resolve().parent
 
+def needs_more_healing(health,in_combat):
+    return bool(health and health['current']<health['maximum']*(.75 if in_combat else .45))
+
 def read(observer):
     state=observer.snapshot()
     menu=next((m for m in state['menus'] if m['name'] in ('stats','inventory','map')),None)
@@ -38,6 +41,7 @@ def wait_state(observer,predicate,seconds=2):
         time.sleep(.1)
 
 def step(observer,client,pid,recording,planner):
+    from equipment_controller import HP_AID_AVAILABLE
     before=read(observer)
     if not before:return {'discarded':'Pip-Boy closed'}
     world=observer.world(before['state'])
@@ -49,12 +53,15 @@ def step(observer,client,pid,recording,planner):
     health=before.get('health')
     if health and health['current']<health['maximum']*.85 and before.get('stimpaks',0)>0:
         options['heal']='Use one Stimpak and verify health or inventory changed. Keep this menu open to assess whether more healing is needed before returning to danger.'
+    if health and health['current']<health['maximum']*.85 and before.get('stimpaks',0)==0 and HP_AID_AVAILABLE.get(pid) is not False:
+        options['aid']='Inspect owned Aid items for alternatives such as Super Stimpaks and Doctors Bags.'
     for index,name in enumerate(quests):
         if name==world['quest']:continue
         options['track:'+str(index)]='Track '+name+' and close the Pip-Boy after verifying it is active.'
     if before['kind']=='stats':options.pop('status',None)
-    if health and health['current']<health['maximum']*.45 and 'heal' in options:
-        options={key:options[key] for key in ('heal','assist')}
+    if needs_more_healing(health,before['state']['player'].get('in_combat')):
+        recovery='heal' if 'heal' in options else None
+        if recovery:options={key:options[key] for key in (recovery,'assist')}
     compact={'objective':'Finish the recorded main story as quickly and reliably as possible. If health is low, heal before closing this menu and returning to danger. Select a useful main-story objective when none is tracked. DLC and local side quests are optional.',
              'visible_menu':before['text'],'active_quest':world['quest'],'journal':world['journal'],
              'observed_data_tab':before.get('tab'),'selected_quest':before.get('selected_quest'),
@@ -81,6 +88,16 @@ def step(observer,client,pid,recording,planner):
     if choice=='status':
         press('f1');wait_state(observer,lambda observed:observed and observed['kind']=='stats')
         return {'choice':choice,'input_count':inputs,'result':'Stats opened'}
+    if choice=='aid':
+        from equipment_controller import read as read_inventory
+        press('f2')
+        for _ in range(6):
+            inventory=read_inventory(observer)
+            if not inventory:time.sleep(.1);continue
+            if inventory['modal']:return {'discarded':'Handle the observed inventory modal'}
+            if inventory['tab']==2:return {'choice':choice,'input_count':inputs,'result':'Aid inventory opened'}
+            press('right' if inventory['tab']<2 else 'left')
+        return {'handoff':'Aid tab did not become observable'}
     if choice=='heal':
         for _ in range(5):
             fresh=read(observer)

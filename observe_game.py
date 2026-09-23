@@ -9,7 +9,7 @@ k.ReadProcessMemory.restype=w.BOOL
 k.CloseHandle.argtypes=[w.HANDLE]
 k.QueryFullProcessImageNameW.argtypes=[w.HANDLE,w.DWORD,w.LPWSTR,c.POINTER(w.DWORD)]
 EXPECTED=pathlib.Path(r"C:\Program Files (x86)\Steam\steamapps\common\Fallout New Vegas\FalloutNV.exe")
-MENUS={1001:"message",1002:"inventory",1003:"stats",1004:"hud",1007:"loading",1008:"container",1009:"dialogue",1012:"wait",1013:"start",1014:"lockpick",1016:"quantity",1023:"map",1026:"book",1027:"levelup",1035:"repair",1036:"appearance",1047:"credits",1048:"chargen",1051:"textedit",1053:"barter",1055:"hacking",1056:"vats",1057:"computer",1059:"tutorial",1074:"vigor",1076:"traitselect",1084:"traits"}
+MENUS={1001:"message",1002:"inventory",1003:"stats",1004:"hud",1007:"loading",1008:"container",1009:"dialogue",1012:"wait",1013:"start",1014:"lockpick",1016:"quantity",1023:"map",1026:"book",1027:"levelup",1035:"repair",1036:"appearance",1047:"credits",1048:"chargen",1051:"textedit",1053:"barter",1055:"hacking",1056:"vats",1057:"computer",1059:"tutorial",1074:"vigor",1075:"companion",1076:"traitselect",1084:"traits"}
 class Observer:
  def __init__(self,pid):
   self.pid=int(pid);self.h=k.OpenProcess(0x1010,False,self.pid)
@@ -57,18 +57,27 @@ class Observer:
   if v.get(0xFA3,1)==0:return []
   path=path+"/"+name
   x+=v.get(0xFA1,0);y+=v.get(0xFA2,0)
+  target=v.get(0xFAF,0);highlighted=bool(v.get(0xFC3,0))
+  if name=='computers_file_template_text':
+   # Terminal rows keep selection on the parent image, text on its child.
+   # Preserve actual observed selection; do not infer it from row order.
+   try:
+    parent_name,parent_values=self.tile(self.u32(p+0x28))
+    if parent_name=='computers_file_template_item':
+     target=parent_values.get(0xFAF,0);highlighted=bool(parent_values.get(0xFC3,0))
+   except (OSError,ValueError):pass
   found=[]
   for ident,val in v.items():
    if isinstance(val,str) and val.strip() and ident==0xFC4:
     found.append({"path":path,"text":val,"x":round(x,2),"y":round(y,2),
                   "width":v.get(0xFB1),"height":v.get(0xFB0),"tile":hex(p),
-                  "target":v.get(0xFAF,0),"highlighted":bool(v.get(0xFC3,0))})
+                  "target":target,"highlighted":highlighted})
   try:
    for child in self.linked(p+4,1024):
     found.extend(self.walk(self.u32(child+8),path,x,y,seen,depth+1))
   except (OSError,ValueError):pass
   return found
- def snapshot(self):
+ def snapshot(self,include_labels=True):
   start=time.perf_counter();out={"pid":self.pid,"observed_at":time.time(),"read_only":True}
   player=self.u32(0x11DEA3C)
   if player:
@@ -85,6 +94,12 @@ class Observer:
      process=self.u32(player+0x68)
      if process and self.u32(process+0x28)<=1:
       out['player']['weapon_drawn']=bool(self.read(process+0x135,1)[0])
+      try:
+       weapon_info=self.u32(process+0x114)
+       weapon=self.u32(weapon_info+8) if weapon_info else 0
+       if weapon and self.read(weapon+4,1)[0]==0x28:
+        out['player']['equipped_weapon']=self.string(self.u32(weapon+0x34))
+      except (OSError,ValueError):pass
       ammo=self.u32(process+0x118)
       count=self.u32(ammo+4) if ammo else None
       if count is not None and count<=100000:out['player']['loaded_ammunition']=count
@@ -95,13 +110,14 @@ class Observer:
    except (OSError,ValueError):out["player"]=None
   base=self.u32(0x11F350C);menus=[]
   out['interface_mode']=self.u32(self.u32(0x11D8A80)+0xC)
+  out['vats_mode']=self.u32(0x11F2258)
   visibility=self.read(0x11F308F+1001,84)
   for ident in range(1001,1085):
    name=MENUS.get(ident,'unknown_'+str(ident))
    try:
     if visibility[ident-1001]==0:continue
     tile=self.u32(base+4*(ident-1001)) if base else 0
-    menus.append({"id":ident,"name":name,"labels":self.walk(tile) if tile else []})
+    menus.append({"id":ident,"name":name,"labels":self.walk(tile) if tile and include_labels else []})
    except (OSError,ValueError):continue
   out["menus"]=menus
   try:
@@ -116,7 +132,7 @@ class Observer:
   out["read_ms"]=round((time.perf_counter()-start)*1000,2)
   return out
 
- def world(self,state):
+ def world(self,state,nearby_ref_ids=None):
   """Loaded references, door destinations and journal; read-only telemetry."""
   player=self.u32(0x11DEA3C);cell=self.u32(player+0x40)
   if not cell or not state.get('player') or hex(self.u32(cell+0xC))!=state['player'].get('cell_id'):
@@ -132,7 +148,7 @@ class Observer:
   origin=state['player']['position'];yaw=state['player']['rotation_radians'][2]
   def reference(ptr):
    base=self.u32(ptr+0x20);kind=self.read(base+4,1)[0]
-   if kind not in (21,28,31,39,42,43):return None
+   if kind not in (21,22,23,28,31,39,42,43):return None
    name=self.string(self.u32(base+(0xD4 if kind in (42,43) else 0x34)))
    pos=self.floats(ptr+0x30,3)
    if not name or not all(math.isfinite(v) for v in pos):return None
@@ -154,8 +170,12 @@ class Observer:
     row['attacking_player']=enemy==player
     row['player_combat_target']=row['ref_id'] in combat_ids
     row['combat_target_id']=hex(self.u32(enemy+0xC)) if enemy else None
-   if kind in (31,42,43):
+   if kind in (22,23,28,31,39,42,43):
     render=self.u32(ptr+0x64);node=self.u32(render+0x14) if render else 0
+    # An actor's parent cell can be loaded while its disabled reference has
+    # no live 3D. Such campaign variants are not actors we can approach/fire at.
+    # Keep the reference for remote quest routing, but not as a loaded target.
+    if kind in (42,43):row['loaded']=row['loaded'] and bool(node)
     bound=self.u32(node+0x20) if node else 0
     if bound:
      center=self.floats(bound,4)
@@ -181,18 +201,36 @@ class Observer:
       destination_space=self.u32(destination+0xC0)
       row['destination']={'cell_id':hex(self.u32(destination+0xC)),
                           'cell_name':self.string(self.u32(destination+0x1C)),
+                          'worldspace_name':self.string(self.u32(destination_space+0x1C)) if destination_space else None,
                           'worldspace_id':hex(self.u32(destination_space+0xC)) if destination_space else None,
                           'door_ref_id':hex(self.u32(linked+0xC))}
    return row
   nearby=[]
   seen=set()
-  for loaded_cell in cells:
-   for ptr in self.linked(loaded_cell+0xAC,1500):
-    if ptr==player or ptr in seen:continue
-    seen.add(ptr)
+  if nearby_ref_ids is None:
+   self._reference_cache={}
+   for loaded_cell in cells:
+    # Dense casino interiors have important actors/loading doors after the
+    # first 1500 decorative refs. Keep the scan bounded without dropping them.
+    for ptr in self.linked(loaded_cell+0xAC,8000 if loaded_cell==cell else 1500):
+     if ptr==player or ptr in seen:continue
+     seen.add(ptr)
+     try:
+      row=reference(ptr)
+      if row and row['same_space']:
+       nearby.append(row);self._reference_cache[row['ref_id']]=ptr
+     except (OSError,ValueError):continue
+  else:
+   # During a bounded shooting action, refresh the already observed target
+   # instead of scanning thousands of unrelated static references. Verify the
+   # reference identity again before reading its current life/position/bounds.
+   for ident in nearby_ref_ids:
+    ptr=getattr(self,'_reference_cache',{}).get(ident)
+    if not ptr:continue
     try:
+     if hex(self.u32(ptr+0xC))!=ident:continue
      row=reference(ptr)
-     if row and row['same_space']:nearby.append(row)
+     if row and row['same_space'] and row['loaded']:nearby.append(row)
     except (OSError,ValueError):continue
   quest=self.u32(player+0x6B8);objectives=[];journal=[];destination_cells=[]
   for obj in self.linked(player+0x6BC,100):
@@ -255,7 +293,7 @@ class Observer:
    if not destination or destination in visited or depth>3:continue
    visited.add(destination)
    try:
-    for door in self.linked(destination+0xAC,1500):
+    for door in self.linked(destination+0xAC,8000):
      base=self.u32(door+0x20)
      if self.read(base+4,1)[0]!=28:continue
      teleport=self.extra(door,0x2B);data=self.u32(teleport+0xC) if teleport else 0
@@ -275,8 +313,15 @@ class Observer:
   if self.u32(player+0x40)!=cell:raise RuntimeError('World changed during observation')
   return {'quest':self.string(self.u32(quest+0x34)) if quest else None,'objectives':objectives,
           'journal':journal,'travel_targets':sorted(entrances,key=lambda row:row['distance']),
-          'worldspace_id':hex(self.u32(space+0xC)) if space else None,'loaded_cell_count':len(cells),
-          'nearby':sorted(nearby,key=lambda row:(not row.get('attacking_player',False),row['distance']))[:40], 'crosshair':crosshair,'camera_position':camera_position,
+          'worldspace_id':hex(self.u32(space+0xC)) if space else None,
+          'worldspace_name':self.string(self.u32(space+0x1C)) if space else None,
+          'cell_id':state['player']['cell_id'],'loaded_cell_count':len(cells),
+          'nearby':sorted(nearby,key=lambda row:(not row.get('attacking_player',False),row['distance']))[:40],
+          'actors':[row for row in nearby if row['kind'] in (42,43) and row['same_space'] and row['loaded']],
+          'terminals':[row for row in nearby if row['kind']==23 and row['same_space'] and row['loaded']],
+          'doors':[row for row in nearby if row['kind']==28 and row['same_space'] and row['loaded']],
+          'furniture':[row for row in nearby if row['kind']==39 and row['same_space'] and row['loaded']],
+          'crosshair':crosshair,'camera_position':camera_position,
           'camera_view':camera_view,'disabled_controls':controls,
           'observation_source':'read-only loaded-world telemetry; not visual recognition'}
 

@@ -45,26 +45,47 @@ def send(event):
 def key_event(name,up=False):
  scan,extended=KEYS[name]
  return INPUT(type=1,ki=KEYBDINPUT(0,scan,0x0008|(0x0001 if extended else 0)|(0x0002 if up else 0),0,0))
-def mouse_event(flags,dx=0,dy=0):
- return INPUT(type=0,mi=MOUSEINPUT(dx,dy,0,flags,0,0))
+def mouse_event(flags,dx=0,dy=0,data=0):
+ return INPUT(type=0,mi=MOUSEINPUT(dx,dy,data&0xFFFFFFFF,flags,0,0))
 
 def pause_world(pid):
  """Emergency normal Escape, allowed when capture fails; never toggles an open menu."""
  observer=Observer(pid); lock=(ROOT/'controller.lock').open('a+b'); acquired=False
  result={'at':time.time(),'pid':pid,'purpose':'pause after controller handoff','verified_paused':False}
+ def visible_pause(state):
+  return state.get('interface_mode')==2 and any(menu['name']=='start' and any(x['text']=='Continue' for x in menu['labels']) for menu in state['menus'])
+ def stable_pause(state):
+  if not visible_pause(state):return False,state
+  for _ in range(2):
+   time.sleep(.25);state=observer.snapshot()
+   if not visible_pause(state):return False,state
+  return True,state
  try:
   lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1);acquired=True
   if foreground_pid()!=pid:raise RuntimeError('Cannot pause a game without foreground ownership')
-  state=observer.snapshot()
-  names={menu['name'] for menu in state['menus']}
-  if 'start' not in names:
+  # Loading and autosaving can swallow the first Escape. Reobserve before
+  # each bounded retry, and never send Escape once any Start menu appears.
+  for attempt in range(3):
+   state=observer.snapshot()
+   confirmed,state=stable_pause(state)
+   if confirmed:break
+   names={menu['name'] for menu in state['menus']}
+   if 'start' in names:
+    time.sleep(.25);continue
    if names-{'hud','tutorial'} or not (state.get('player') or {}).get('cell_id'):
     raise RuntimeError('Unknown menu or cinematic state; no blind Escape')
+   if foreground_pid()!=pid:raise RuntimeError('Game lost foreground before pause retry')
+   result['escape_attempts']=attempt+1
    try:
     send(key_event('escape'));time.sleep(.1)
    finally:send(key_event('escape',True))
-   time.sleep(.25);state=observer.snapshot()
-  result['verified_paused']=any(menu['name']=='start' and any(x['text']=='Continue' for x in menu['labels']) for menu in state['menus'])
+   until=time.monotonic()+1.5
+   while time.monotonic()<until:
+    time.sleep(.1);state=observer.snapshot()
+    if visible_pause(state):break
+   confirmed,state=stable_pause(state)
+   if confirmed:break
+  result['verified_paused']=confirmed
   if not result['verified_paused']:raise RuntimeError('Pause menu was not observed')
  except Exception as exc:result['error']=f'{type(exc).__name__}: {exc}'
  finally:
@@ -96,43 +117,53 @@ def point_cursor(pid,recording,x,y,actor='Astra'):
   raise RuntimeError('Menu cursor did not converge to its observed target')
  finally:observer.close()
 
-def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,actor='Astra',stop_when=None):
+def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,actor='Astra',stop_when=None,wheel=0,drag=False,poll_menu_labels=True):
  keys=list(keys)
  if not .05<=seconds<=3:raise ValueError('Key hold must be 0.05 to 3 seconds')
  if len(keys)>3 or len(set(keys))!=len(keys) or any(key not in KEYS for key in keys):raise ValueError('Unknown or excessive keys')
  if any(not isinstance(v,int) or abs(v)>1500 for v in (dx,dy)):raise ValueError('Mouse movement exceeds bounds')
  if button not in (None,*BUTTONS):raise ValueError('Unknown mouse button')
- if not keys and not dx and not dy and not button:raise ValueError('No input requested')
+ if drag and (button!='left' or not (dx or dy)):raise ValueError('Map dragging requires left button and movement')
+ if not isinstance(wheel,int) or abs(wheel)>5:raise ValueError('Wheel movement must be at most five notches')
+ if not keys and not dx and not dy and not button and not wheel:raise ValueError('No input requested')
  if actor not in ('Astra','Jev'):raise ValueError('Unknown decision actor')
  # An exclusive one-byte lock prevents competing controller processes.
  lock=(ROOT/'controller.lock').open('a+b');lock.seek(0)
  if not lock.read(1):lock.write(b'0');lock.flush()
  lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
- observer=None;held=[];mouse_held=False
+ observer=None;held=[];mouse_held=False;capture_checked_at=0;capture_health=None
  request_id=request_id or str(uuid.uuid4())
  row={'at':time.time(),'request_id':request_id,'actor':actor,'keys':keys,
-      'seconds':seconds,'dx':dx,'dy':dy,'button':button,'phase':'dispatching','executor':'game_input'}
+      'seconds':seconds,'dx':dx,'dy':dy,'button':button,'wheel':wheel,'drag':drag,'phase':'dispatching','executor':'game_input'}
  def log():
   with (ROOT/'actions.jsonl').open('a',encoding='utf-8') as f:f.write(json.dumps(row)+'\n')
  def guard():
+  nonlocal capture_checked_at,capture_health
   if foreground_pid()!=pid:raise RuntimeError('Game lost foreground; input stopped')
   if (ROOT/'controller.stop').exists():raise RuntimeError('Controller stop requested')
-  health=recording_health(recording)
-  if health.get('game_pid')!=pid:raise RuntimeError('Recorder is not pinned to this game process')
-  return health
+  # Check focus/stop on every tick, but avoid rereading identical encoder files
+  # several times in one input frame. Capture still gets four checks per second.
+  if capture_health is None or time.monotonic()-capture_checked_at>=.25:
+   capture_health=recording_health(recording);capture_checked_at=time.monotonic()
+   if capture_health.get('game_pid')!=pid:raise RuntimeError('Recorder is not pinned to this game process')
+  return capture_health
  try:
   # Opens only the known FalloutNV.exe with read/query permissions.
-  observer=Observer(pid);before=observer.snapshot();health=guard()
+  observer=Observer(pid);before=observer.snapshot(include_labels=poll_menu_labels);health=guard()
   row.update(observed_at=before['observed_at'],recording=health);log()
-  if dx or dy:send(mouse_event(0x0001,dx,dy))
+  if drag and not any(m['name']=='map' for m in before['menus']):raise RuntimeError('Dragging is restricted to the observed game map')
+  if (dx or dy) and not drag:send(mouse_event(0x0001,dx,dy))
+  if wheel:send(mouse_event(0x0800,data=wheel*120))
   for key in keys:
    guard();send(key_event(key));held.append(key)
   if button:
    guard();send(mouse_event(BUTTONS[button][0]));mouse_held=True
+  if drag:
+   time.sleep(.1);guard();send(mouse_event(0x0001,dx,dy))
   end=time.perf_counter()+seconds
   while time.perf_counter()<end:
    time.sleep(min(.05,max(0,end-time.perf_counter())));guard()
-   if stop_when is not None and stop_when(observer.snapshot()):
+   if stop_when is not None and stop_when(observer.snapshot(include_labels=poll_menu_labels)):
     row['released_on_observed_state_change']=True
     break
   row['phase']='input_sent'
@@ -156,7 +187,7 @@ def act(pid,recording,keys=(),seconds=.15,dx=0,dy=0,button=None,request_id=None,
   if release_errors:raise RuntimeError('Input release failed: '+'; '.join(release_errors))
  time.sleep(.08)
  observer=Observer(pid)
- try:after=observer.snapshot()
+ try:after=observer.snapshot(include_labels=poll_menu_labels)
  finally:observer.close()
  (ROOT/'latest-observation.json').write_text(json.dumps(after,indent=2),encoding='utf-8')
  return {'action':row,'after':after}

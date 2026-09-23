@@ -2,6 +2,7 @@
 import argparse,json,pathlib,time,uuid
 from observe_game import Observer
 from jev_bridge import decide,commentary
+from capture_progress import samples,numbers,advancing
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def capture_quality(state,video_us,audio_us,now=None):
@@ -29,9 +30,10 @@ def recording_health(folder):
     with (folder/'progress.txt').open('rb') as f:
         f.seek(0,2);size=f.tell();f.seek(max(0,size-4096))
         progress=f.read().decode('ascii',errors='ignore')
-    frames=[int(line.split('=',1)[1]) for line in progress.splitlines() if line.startswith('frame=')]
+    video_records=samples(progress)
+    frames=numbers(video_records,'frame')
     if (state['state']!='recording' or time.time()-state['last_update']>4 or
-        state['audio_frames']<=0 or len(frames)<2 or frames[-1]<=frames[-2] or
+        state['audio_frames']<=0 or not advancing(frames) or
         time.time()-(folder/'progress.txt').stat().st_mtime>4):
         raise RuntimeError('Recording has not demonstrated fresh video and audio progress')
     quality={}
@@ -40,10 +42,10 @@ def recording_health(folder):
         with audio_progress.open('rb') as f:
             f.seek(0,2);size=f.tell();f.seek(max(0,size-4096))
             audio_text=f.read().decode('ascii',errors='ignore')
-        timestamps=[int(line.split('=',1)[1]) for line in audio_text.splitlines() if line.startswith('out_time_us=') and line.split('=',1)[1].lstrip('-').isdigit()]
-        if len(timestamps)<2 or timestamps[-1]<=timestamps[-2] or time.time()-audio_progress.stat().st_mtime>4:
+        timestamps=numbers(samples(audio_text),'out_time_us')
+        if not advancing(timestamps) or time.time()-audio_progress.stat().st_mtime>4:
             raise RuntimeError('AAC encoder has not demonstrated fresh audio progress')
-        video_times=[int(line.split('=',1)[1]) for line in progress.splitlines() if line.startswith('out_time_us=') and line.split('=',1)[1].lstrip('-').isdigit()]
+        video_times=numbers(video_records,'out_time_us')
         if not video_times:raise RuntimeError('Video encoder timeline unavailable')
         quality=capture_quality(state,video_times[-1],timestamps[-1])
     return {'healthy':True,'video_frames':frames[-1],'audio_frames':state['audio_frames'],
