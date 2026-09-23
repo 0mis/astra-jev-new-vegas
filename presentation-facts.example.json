@@ -1,0 +1,43 @@
+{
+  "main_story_complete": true,
+  "rounded_recorded_hours": 24,
+  "level": 9,
+  "speech": 100,
+  "guns": 78,
+  "loaded_rounds": 1,
+  "weapon": "Anti-Materiel Rifle",
+  "milestones": [
+    {
+      "title": "Goodsprings",
+      "detail": "Fresh start and Sunny's lesson"
+    },
+    {
+      "title": "Primm + Nipton",
+      "detail": "Follow the trail to Benny"
+    },
+    {
+      "title": "Novac + Boulder City",
+      "detail": "The Tops casino identified"
+    },
+    {
+      "title": "The Strip",
+      "detail": "Benny and the Platinum Chip"
+    },
+    {
+      "title": "Lucky 38",
+      "detail": "Yes Man takes over"
+    },
+    {
+      "title": "Side Bets",
+      "detail": "Five faction contacts"
+    },
+    {
+      "title": "Hoover Dam",
+      "detail": "Reach the final showdown"
+    },
+    {
+      "title": "Independence",
+      "detail": "Ending and credits verified"
+    }
+  ]
+}

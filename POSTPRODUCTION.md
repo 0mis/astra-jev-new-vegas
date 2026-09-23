@@ -38,3 +38,9 @@ An eight-clip production check covered the corrected title, public commentary, a
 The run has about 24 hours across recorded sessions (approximately 23h55m50s) between fresh-new-game confirmation and the verified ending. This sums decoded recording intervals, removes overlaps, includes recorded pauses and retries, and excludes long unrecorded breaks. It is not pure active gameplay or edited runtime. The earlier calendar-time headline was withdrawn because it counted long breaks. Keep precise local timestamps private and publish only the duration and its definition.
 
 The output title and captions visibly credit GPT-6 Astra and Jev. The run was supervised, used read-only game telemetry, changed difficulty and included crashes, reloads and loops. Jev reached its capped local budget before Astra finished. No flawless-autonomy or gap-free-recording claim is supported.
+
+## Static presentation graphics
+
+`make_campaign_graphics.py` builds two original SVG layouts around supplied PNG game screenshots: a milestone card with defined recorded-session timing, and a final-checkpoint build card. `presentation-facts.example.json` contains this campaign's verified public facts. Adapt and verify every fact for a different run. Provide inspected screenshots using `--completion-image` and `--speech-image`, the facts file with `--facts`, and a private output folder with `--output`.
+
+The graphics preserve the screenshot's aspect ratio and label what the image shows. Game screenshots, generated images and private proof records are not included in this source package. Rasterize the SVG with a suitable renderer and inspect the entire actual output for text fitting, fact accuracy, private content and metadata before publication. The tested 1200x900 PNG exports were rendered with Sharp. Generating or decoding an artifact never grants publication clearance.
