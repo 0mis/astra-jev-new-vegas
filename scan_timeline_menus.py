@@ -70,7 +70,8 @@ def main():
                'candidates_visual_review': 'pending'}
         with av.open(str(source)) as container:
             stream = container.streams.video[0]
-            stream.codec_context.thread_count = 2
+            stream.codec_context.thread_count = 4
+            stream.thread_type = 'AUTO'
             first = next(container.decode(stream)).time or 0
             step = 1 / float(stream.average_rate or 30)
             for left, right in spans:
