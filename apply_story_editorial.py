@@ -47,7 +47,8 @@ CHAPTERS = [
     ('campaign-037', 0, 'Crossing the dam with scarce ammunition'),
     ('campaign-038', 0, 'Lanius, Oliver and Speech 100'),
     ('campaign-038', 1667, 'The independent New Vegas ending'),
-    ('campaign-038', 1852, 'Closing credits and the paranoid part'),
+    ('retrospective-saves', 0, 'The paranoid part: saved, checked, saved again'),
+    ('campaign-038', 1852, 'Closing credits'),
     ('campaign-039', 35, 'Completion verified'),
 ]
 
@@ -79,6 +80,49 @@ def add_caption(clips, at, duration, label, text, evidence):
         raise ValueError('Caption was not fully placed')
 
 
+def insert_save_replays(data, sources):
+    """Replay explicit retained spans, preserving their source and audio mapping."""
+    clips = data['clips']
+    insert_at = next((i for i, c in enumerate(clips)
+                      if c['session'] == 'campaign-038' and c['session_start'] >= 1852), None)
+    if insert_at is None or not sources:
+        raise ValueError('Save-check montage needs reviewed sources and a credits boundary')
+    replay, offset = [], 0.
+    for spec in sources:
+        start, stop = spec['video_in'], spec['video_out']
+        source = next((c for c in clips if c['video'] == spec['video']
+                       and c['video_in'] <= start + .001 and c['video_out'] >= stop - .001), None)
+        if source is None or stop <= start:
+            raise ValueError('Replay must be contained in a retained source clip')
+        c = copy.deepcopy(source)
+        fraction_in = (start-source['video_in'])/(source['video_out']-source['video_in'])
+        fraction_out = (stop-source['video_in'])/(source['video_out']-source['video_in'])
+        for kind in ('audio', 'session'):
+            left, right = (kind+'_in', kind+'_out') if kind == 'audio' else ('session_start', 'session_end')
+            c[left] = source[left] + fraction_in*(source[right]-source[left])
+            c[right] = source[left] + fraction_out*(source[right]-source[left])
+        c['source_session'] = source['session']
+        c['source_session_start'], c['source_session_end'] = c['session_start'], c['session_end']
+        c['video_in'], c['video_out'] = start, stop
+        c['output_frames'] = round((stop-start)*30)
+        c['output_seconds'] = c['output_frames']/30
+        c['audio_tempo'] = (c['audio_out']-c['audio_in'])/c['output_seconds']
+        c['speed'], c['speed_label'], c['replay'] = 1., 'Replay - 1x speed', True
+        c['session'] = 'retrospective-saves'
+        c['session_start'], c['session_end'] = offset, offset+c['output_seconds']
+        c['replay_review_evidence'] = spec['review']
+        c.pop('captions', None)
+        offset += c['output_seconds']
+        replay.append(c)
+    clips[insert_at:insert_at] = replay
+    offset = 0.
+    for i, c in enumerate(clips):
+        c['index'], c['output_start'] = i, offset
+        offset += c['output_seconds']
+    data['output_seconds'] = offset
+    return sum(c['output_seconds'] for c in replay)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, default=Path('.'))
@@ -87,6 +131,8 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     data = copy.deepcopy(json.loads(args.timeline.read_text(encoding='utf-8')))
+    paranoid = json.loads((root/'postproduction/editorial-commentary.json').read_text(encoding='utf-8'))['paranoid_part']
+    replay_duration = insert_save_replays(data, paranoid.get('replay_sources', []))
     candidates = json.loads((root/'postproduction/public-commentary-candidates.json').read_text(encoding='utf-8'))
     raw = [json.loads(s) for s in (root/'commentary.jsonl').read_text(encoding='utf-8').splitlines() if s.strip()]
     authentic = {(s.get('at_utc'), s.get('text')) for s in raw}
@@ -132,12 +178,13 @@ def main():
         last_stop = start+duration
     credits = output_at(clips, 'campaign-038', 1852)
     if credits is not None:
-        p = json.loads((root/'postproduction/editorial-commentary.json').read_text(encoding='utf-8'))['paranoid_part']
-        at = credits+5
-        add_caption(clips, at, 18, 'THE PARANOID PART - RETROSPECTIVE', p['narration'], {'not_a_live_quote': True})
+        at = output_at(clips, 'retrospective-saves', 0)
+        add_caption(clips, at, replay_duration, 'THE PARANOID PART - ASTRA RETROSPECTIVE',
+                    paranoid['narration'], {'not_a_live_quote': True, 'replay': True})
         placements.append({'kind': 'clearly labeled retrospective', 'output_start': at,
-                           'output_end': at+18, 'text': p['narration'], 'matching_scene_review': 'pending'})
-        add_caption(clips, at+25, 15, 'GPT-6 ASTRA + JEV - RETROSPECTIVE',
+                           'output_end': at+replay_duration, 'text': paranoid['narration'],
+                           'matching_scene_review': 'save-check source samples inspected; full export review pending'})
+        add_caption(clips, credits+5, 15, 'GPT-6 ASTRA + JEV - RETROSPECTIVE',
                     'Jev supplied rapid decisions. Astra planned, improved controls and recovered failures, then finished the normal game inputs after Jev reached its cap.',
                     {'not_a_live_quote': True})
     result_path = root/'world-results.jsonl'

@@ -25,7 +25,7 @@ def ass_text(value):
     return value.replace('\\', '\\u005c').replace('{', '(').replace('}', ')').replace('\n', r'\N')
 
 
-def subtitles(path, duration, speed=1, title=False, opening=False, audio_gap=False, captions=None, title_timing=None, speed_label=None):
+def subtitles(path, duration, speed=1, title=False, opening=False, audio_gap=False, captions=None, title_timing=None, speed_label=None, clean_presentation=False, replay=False):
     header = '''[Script Info]
 ScriptType: v4.00+
 PlayResX: 1280
@@ -54,10 +54,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             event('Body', r'{\pos(640,429)\fs27}' + ass_text(title_timing['headline']))
             event('Body', r'{\pos(640,468)\fs18}' + ass_text(title_timing['definition']))
         event('Body', r'{\pos(640,541)\fs22}Jev: rapid gameplay decisions\NGPT-6 Astra: planning, controls and recoveries')
-        event('Body', r'{\pos(640,627)\fs17\c&HAAAAAA&}PRIVATE EDITING DRAFT - privacy and edit review pending')
+        if not clean_presentation:
+            event('Body', r'{\pos(640,627)\fs17\c&HAAAAAA&}PRIVATE EDITING DRAFT - privacy and edit review pending')
     else:
-        event('Credit', 'GPT-6 Astra + Jev')
-        event('Speed', ass_text(speed_label) if speed_label else f'{speed:g}x speed' if speed != 1 else 'Private editing draft')
+        # Replay save indicators are at the game's top left. Leave them visible.
+        event('Credit', (r'{\an9\pos(1256,50)}' if replay else '') + 'GPT-6 Astra + Jev')
+        if speed_label or speed != 1 or not clean_presentation:
+            event('Speed', ass_text(speed_label) if speed_label else f'{speed:g}x speed' if speed != 1 else 'Private editing draft')
         if opening:
             event('Note', r'{\fs16\c&H00D2F2FF&}RETROSPECTIVE INTRODUCTION\N{\fs24\c&H00FFFFFF&}A supervised main-story run.\NPauses and waiting are cut; accelerated sections are labeled.', end=min(duration, 8))
         if audio_gap:
@@ -121,6 +124,8 @@ def main():
     p.add_argument('--no-title', action='store_true')
     p.add_argument('--encoder', choices=('libx264', 'h264_nvenc'), default='libx264')
     p.add_argument('--filename', default='private-opening-draft.mp4')
+    p.add_argument('--clean-presentation', action='store_true',
+                   help='Omit draft watermarks only. Output stays private and requires full review.')
     a = p.parse_args()
     root, folder = a.root.resolve(), a.output.resolve()
     if root / 'postproduction' not in folder.parents:
@@ -143,7 +148,8 @@ def main():
     status_path = folder / 'status.json'
     if not a.no_title:
         title = folder / 'title.mkv'
-        subtitles(folder / 'title.ass', 9, title=True, title_timing=data.get('presentation', {}).get('elapsed_time'))
+        subtitles(folder / 'title.ass', 9, title=True, title_timing=data.get('presentation', {}).get('elapsed_time'),
+                  clean_presentation=a.clean_presentation)
         run(ffmpeg, ['-f', 'lavfi', '-i', 'color=c=0x101510:s=1280x720:r=30:d=9',
                      '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
                      '-vf', 'subtitles=title.ass', '-t', '9', *output_args, str(title)], folder, 'title')
@@ -154,8 +160,13 @@ def main():
         # position or index. Review bookkeeping does not change rendered pixels.
         identity_clip = {k: v for k, v in clip.items()
                          if k not in ('index', 'output_start', 'visual_review', 'audio_review')}
-        identity = hashlib.sha256(json.dumps({'clip': identity_clip, 'render_revision': RENDER_REVISION,
-                                              'encoder': a.encoder, 'opening': i == 0}, sort_keys=True).encode()).hexdigest()
+        identity_data = {'clip': identity_clip, 'render_revision': RENDER_REVISION,
+                         'encoder': a.encoder, 'opening': i == 0}
+        # Accelerated clips already have speed labels instead of draft marks;
+        # keep their validated revision4 cache when only presentation changes.
+        if a.clean_presentation and clip['speed'] == 1 and not clip.get('speed_label'):
+            identity_data['clean_presentation'] = True
+        identity = hashlib.sha256(json.dumps(identity_data, sort_keys=True).encode()).hexdigest()
         clip_name = 'clip-' + identity[:24]
         file = folder / (clip_name + '.mkv')
         receipt_path = folder / (clip_name + '.json')
@@ -183,7 +194,8 @@ def main():
         duration = clip['output_seconds']
         subtitles(ass, duration, speed=clip['speed'], opening=i == 0,
                    audio_gap=clip.get('audio_alignment_gap', False), captions=clip.get('captions'),
-                   speed_label=clip.get('speed_label'))
+                   speed_label=clip.get('speed_label'), clean_presentation=a.clean_presentation,
+                   replay=clip.get('replay', False))
         vduration = clip['video_out'] - clip['video_in']
         aduration = clip['audio_out'] - clip['audio_in']
         filters = (f'[0:v]trim=duration={vduration:.9f},setpts=(PTS-STARTPTS)/{vduration/duration:.10f},'
@@ -243,9 +255,11 @@ def main():
                                  f'START={round(chapter["output_start"]*1000)}',
                                  f'END={round(stop*1000)}', 'title=' + title])
     (folder / 'chapters.ffmeta').write_text('\n'.join(chapter_metadata) + '\n', encoding='utf-8')
+    metadata_title = ('GPT-6 Astra + Jev - Fallout: New Vegas - Full Main Story'
+                      if a.clean_presentation else 'GPT-6 Astra + Jev - private editing draft')
     run(ffmpeg, ['-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-i', 'chapters.ffmeta',
                  '-map', '0:v', '-map', '0:a', '-map_chapters', '1', '-c:v', 'copy', '-c:a', 'aac',
-                 '-b:a', '160k', '-map_metadata', '-1', '-metadata', 'title=GPT-6 Astra + Jev - private editing draft',
+                 '-b:a', '160k', '-map_metadata', '-1', '-metadata', 'title=' + metadata_title,
                  '-movflags', '+faststart', str(draft)], folder, 'assemble')
     check = inspect_output(draft)
     expected_seconds = sum(c['output_seconds'] for c in clips) + (0 if a.no_title else 9)
@@ -260,6 +274,7 @@ def main():
     status_path.write_text(json.dumps({'at': time.time(), 'state': 'rendered_private_draft', 'file': str(draft),
                                       'clips': len(clips), 'decode': check, 'privacy_review': 'pending',
                                       'encoder': a.encoder, 'pending_source_sessions': data.get('pending', []),
+                                      'clean_presentation': a.clean_presentation,
                                       'chapters': chapters,
                                       'full_export_watch_and_listen_review': 'pending'}, indent=2), encoding='utf-8')
     print(json.dumps({'rendered_private_draft': str(draft), 'decode': check, 'privacy_review': 'pending'}), flush=True)
