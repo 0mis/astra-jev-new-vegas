@@ -128,7 +128,9 @@ def session_clips(root, rows, transcripts, actions, name, editorial=None):
         pause = json.loads(pause_file.read_text(encoding='utf-8')) if pause_file.exists() else {}
         if not pause.get('scan_complete') or pause.get('sha256') != video['sha256']:
             raise ValueError('Missing matching full-frame pause scan: ' + video['path'])
-        paused.extend([video['start'] + a - .12, video['start'] + b + .18] for a, b in pause['pause_candidates'])
+        # Actual boundary review found menu fade-in before the text reaches
+        # the detector threshold, and fade-out after it falls below it.
+        paused.extend([video['start'] + a - .7, video['start'] + b + .6] for a, b in pause['pause_candidates'])
     active, real_time = [], []
     for action in actions:
         rec = action.get('recording', {})

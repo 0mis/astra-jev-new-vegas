@@ -69,7 +69,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             label = ass_text(caption['label'])
             body = ass_text(caption['text'])
             if caption.get('style') == 'Action':
-                event('Action', label + ': ' + body,
+                # The game's save/quest notifications occupy the top left.
+                event('Action', r'{\an9\pos(1256,50)}' + label + ': ' + body,
                       start=max(0., caption['start']), end=min(duration, caption['end']))
                 continue
             event('Note', r'{\fs16\c&H00D2F2FF&}' + label + r'\N{\fs24\c&H00FFFFFF&}' + body,
@@ -89,9 +90,13 @@ def tempo_filters(value):
     return ','.join(result)
 
 
-def inspect_output(path):
+def inspect_output(path, progress=None):
     result = {'video_frames': 0, 'audio_samples': 0, 'video_first': None, 'video_last': None}
     with av.open(str(path)) as c:
+        for stream in c.streams:
+            stream.codec_context.thread_count = 4
+            if stream.type == 'video':
+                stream.thread_type = 'AUTO'
         for packet in c.demux():
             for frame in packet.decode():
                 if isinstance(frame, av.VideoFrame):
@@ -102,6 +107,8 @@ def inspect_output(path):
                 else:
                     result['audio_samples'] += frame.samples
                     result['audio_rate'] = frame.sample_rate
+                if progress and isinstance(frame, av.VideoFrame) and result['video_frames'] % 3000 == 0:
+                    progress(dict(result))
     result['decode_complete'] = result['video_frames'] > 0 and result['audio_samples'] > 0
     return result
 
@@ -126,6 +133,10 @@ def main():
     p.add_argument('--filename', default='private-opening-draft.mp4')
     p.add_argument('--clean-presentation', action='store_true',
                    help='Omit draft watermarks only. Output stays private and requires full review.')
+    p.add_argument('--normalize-audio', action='store_true',
+                   help='Measure the exact assembled audio, then normalize loudness and limit true peaks. Does not replace listening.')
+    p.add_argument('--clips-only', action='store_true',
+                   help='Render and validate reusable clips without assembling a candidate yet.')
     a = p.parse_args()
     root, folder = a.root.resolve(), a.output.resolve()
     if root / 'postproduction' not in folder.parents:
@@ -162,6 +173,8 @@ def main():
                          if k not in ('index', 'output_start', 'visual_review', 'audio_review')}
         identity_data = {'clip': identity_clip, 'render_revision': RENDER_REVISION,
                          'encoder': a.encoder, 'opening': i == 0}
+        if any(caption.get('style') == 'Action' for caption in clip.get('captions', [])):
+            identity_data['action_label_revision'] = 2
         # Accelerated clips already have speed labels instead of draft marks;
         # keep their validated revision4 cache when only presentation changes.
         if a.clean_presentation and clip['speed'] == 1 and not clip.get('speed_label'):
@@ -236,6 +249,11 @@ def main():
         rendered.append(file)
         receipts.append(receipt)
         print(json.dumps({'clip': i + 1, 'of': len(clips), 'seconds': duration, 'decoded': receipt['decode_complete']}), flush=True)
+    if a.clips_only:
+        status_path.write_text(json.dumps({'at': time.time(), 'state': 'clips_cached',
+                                          'clips': len(clips), 'privacy_review': 'pending'}), encoding='utf-8')
+        print(json.dumps({'clips_cached': len(clips), 'privacy_review': 'pending'}), flush=True)
+        return
     # Files have generated safe names, so the concat file needs no shell quoting.
     (folder / 'concat.txt').write_text(''.join("file '" + p.name + "'\n" for p in rendered), encoding='utf-8')
     draft = folder / a.filename
@@ -257,11 +275,35 @@ def main():
     (folder / 'chapters.ffmeta').write_text('\n'.join(chapter_metadata) + '\n', encoding='utf-8')
     metadata_title = ('GPT-6 Astra + Jev - Fallout: New Vegas - Full Main Story'
                       if a.clean_presentation else 'GPT-6 Astra + Jev - private editing draft')
+    audio_filters = []
+    if a.normalize_audio:
+        status_path.write_text(json.dumps({'at': time.time(), 'state': 'measuring_audio',
+                                          'privacy_review': 'pending'}), encoding='utf-8')
+        run(ffmpeg, ['-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-map', '0:a',
+                     '-vn', '-sn', '-dn', '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json',
+                     '-f', 'null', 'NUL'], folder, 'audio-measurement')
+        log = (folder / 'audio-measurement.log').read_text(encoding='utf-8', errors='replace')
+        measurement = json.loads(log[log.rfind('\n{') + 1:log.rfind('}') + 1])
+        keys = ('input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset')
+        if any(not math.isfinite(float(measurement[k])) for k in keys):
+            raise ValueError('Non-finite loudness measurement; inspect the audio before normalization')
+        (folder / 'audio-measurement.json').write_text(json.dumps(measurement, indent=2), encoding='utf-8')
+        audio_filters = ['-af', 'loudnorm=I=-16:TP=-1.5:LRA=11:'
+                         + ':'.join(f'{key}={measurement[value]}' for key, value in (
+                             ('measured_I', 'input_i'), ('measured_TP', 'input_tp'),
+                             ('measured_LRA', 'input_lra'), ('measured_thresh', 'input_thresh'),
+                             ('offset', 'target_offset')))
+                         + ':linear=false:print_format=json', '-ar', '48000']
+    status_path.write_text(json.dumps({'at': time.time(), 'state': 'assembling',
+                                      'privacy_review': 'pending'}), encoding='utf-8')
     run(ffmpeg, ['-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-i', 'chapters.ffmeta',
                  '-map', '0:v', '-map', '0:a', '-map_chapters', '1', '-c:v', 'copy', '-c:a', 'aac',
-                 '-b:a', '160k', '-map_metadata', '-1', '-metadata', 'title=' + metadata_title,
+                 '-b:a', '160k', *audio_filters, '-map_metadata', '-1', '-metadata', 'title=' + metadata_title,
                  '-movflags', '+faststart', str(draft)], folder, 'assemble')
-    check = inspect_output(draft)
+    def report_decode(check):
+        status_path.write_text(json.dumps({'at': time.time(), 'state': 'decoding_candidate',
+                                          'decode': check, 'privacy_review': 'pending'}), encoding='utf-8')
+    check = inspect_output(draft, progress=report_decode)
     expected_seconds = sum(c['output_seconds'] for c in clips) + (0 if a.no_title else 9)
     actual_audio_seconds = check['audio_samples'] / check['audio_rate']
     actual_video_seconds = check['video_last'] - check['video_first'] + 1/30
@@ -275,6 +317,7 @@ def main():
                                       'clips': len(clips), 'decode': check, 'privacy_review': 'pending',
                                       'encoder': a.encoder, 'pending_source_sessions': data.get('pending', []),
                                       'clean_presentation': a.clean_presentation,
+                                      'normalized_audio': a.normalize_audio,
                                       'chapters': chapters,
                                       'full_export_watch_and_listen_review': 'pending'}, indent=2), encoding='utf-8')
     print(json.dumps({'rendered_private_draft': str(draft), 'decode': check, 'privacy_review': 'pending'}), flush=True)
