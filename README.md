@@ -2,7 +2,9 @@
 
 The Jev/Astra team completed an independent New Vegas main-story run on September 23, 2026. The ending slideshow and credits were observed and recorded. Jev made frequent bounded gameplay choices; Astra developed the controller, planned routes, diagnosed loops and crashes, and handled recoveries. When the local Jev ledger reached its $1 cap, Astra completed the remaining combat and final conversations using ordinary game input.
 
-This is the source of that supervised run. It is not a one-command unattended game player. The campaign required substantial development and intervention. The complete video edit and its mandatory privacy review are still in progress; there is no final video link yet.
+This is the source of that supervised run. It is not a one-command unattended game player. The campaign required substantial development and intervention. The finished full-main-story edit runs 5h29m52s, with known pause/loading menus removed, accelerated footage labeled, public gameplay commentary, the independent ending, and a retrospective save-check montage.
+
+[Watch the full main story on YouTube](https://youtu.be/tBVq09mDq6g) · [Read the presentation on X](https://x.com/imjustnewatai/status/2102934229180875054).
 
 ## What was verified
 
@@ -56,12 +58,12 @@ Inputs are guarded by fresh recording progress, process identity, focus, stop fi
 - `build_story_timeline.py`, `apply_story_editorial.py`, `render_story_draft.py`: campaign-specific rough-cut construction, traceable public commentary, chapter metadata and private rendering. The renderer offers CPU H.264 and optional NVIDIA NVENC, normalizes intermediate audio to FLAC s16 and verifies decoded audio/video durations after assembly.
 - `review_frames.py`, `scan_review_text.py`: timestamped review samples and explicitly sampled local OCR. These are review aids, not complete visual/audio review. See `POSTPRODUCTION.md` for data requirements and limitations.
 
-The final edit will remove pauses and waiting, label acceleration, preserve the main story and ending, and use actual public gameplay commentary or clearly labeled retrospective narration. Private reasoning transcripts, invented quotes, personal information and unreviewed footage are excluded from publication.
+The edit uses actual public gameplay commentary and clearly labeled retrospective narration. It does not present private reasoning transcripts or invented quotes.
 
 ## Limitations and provenance
 
 The controller relies on game telemetry, not only screenshots. Navigation meshes omit some props and can connect the wrong floor unless carefully scoped. Dialogues may scroll, scripted scenes temporarily disable controls, and observer state can change during reads. Actor targeting requires an actual rendered actor. The code is version-specific and still needs supervision.
 
-The recording is game-window video plus system playback loopback, not microphone input. Other applications' audio can enter loopback. Full footage/audio review and review of the actual final export, captions, thumbnails and metadata remain necessary before publication. Samples or a successful decode are insufficient.
+The recording is game-window video plus system playback loopback, not microphone input. Other applications' audio can enter loopback. Decoding, sampled frame checks and machine transcripts do not certify an end-to-end privacy review or establish that every sound is game-only. Review your recordings and final captions, thumbnails and metadata before publishing.
 
 See `ARCHITECTURE.md` and `THIRD_PARTY.md` for design and layout research, including the user-supplied Minecraft agent reference. The implementation is original. No game assets, saves, recordings, dependency binaries or credentials are distributed. The MIT license covers this repository's original source and documentation only.
