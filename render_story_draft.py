@@ -275,6 +275,11 @@ def main():
     (folder / 'chapters.ffmeta').write_text('\n'.join(chapter_metadata) + '\n', encoding='utf-8')
     metadata_title = ('GPT-6 Astra + Jev - Fallout: New Vegas - Full Main Story'
                       if a.clean_presentation else 'GPT-6 Astra + Jev - private editing draft')
+    # Removing inherited metadata also removes chapter labels. Restore only the
+    # reviewed titles explicitly; do not copy private source metadata wholesale.
+    chapter_title_args = []
+    for i, chapter in enumerate(chapters):
+        chapter_title_args.extend([f'-metadata:c:{i}', 'title=' + chapter['title']])
     audio_filters = []
     if a.normalize_audio:
         status_path.write_text(json.dumps({'at': time.time(), 'state': 'measuring_audio',
@@ -298,7 +303,8 @@ def main():
                                       'privacy_review': 'pending'}), encoding='utf-8')
     run(ffmpeg, ['-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-i', 'chapters.ffmeta',
                  '-map', '0:v', '-map', '0:a', '-map_chapters', '1', '-c:v', 'copy', '-c:a', 'aac',
-                 '-b:a', '160k', *audio_filters, '-map_metadata', '-1', '-metadata', 'title=' + metadata_title,
+                 '-b:a', '160k', *audio_filters, '-map_metadata', '-1', *chapter_title_args,
+                 '-metadata', 'title=' + metadata_title,
                  '-movflags', '+faststart', str(draft)], folder, 'assemble')
     def report_decode(check):
         status_path.write_text(json.dumps({'at': time.time(), 'state': 'decoding_candidate',

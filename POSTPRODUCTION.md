@@ -48,3 +48,12 @@ The output title and captions visibly credit GPT-6 Astra and Jev. The run was su
 `make_campaign_graphics.py` builds two original SVG layouts around supplied PNG game screenshots: a milestone card with defined recorded-session timing, and a final-checkpoint build card. `presentation-facts.example.json` contains this campaign's verified public facts. Adapt and verify every fact for a different run. Provide inspected screenshots using `--completion-image` and `--speech-image`, the facts file with `--facts`, and a private output folder with `--output`.
 
 The graphics preserve the screenshot's aspect ratio and label what the image shows. Game screenshots, generated images and private proof records are not included in this source package. Rasterize the SVG with a suitable renderer and inspect the entire actual output for text fitting, fact accuracy, private content and metadata before publication. The tested 1200x900 PNG exports were rendered with Sharp. Generating or decoding an artifact never grants publication clearance.
+
+
+## Final chapter and encoded-audio checks
+
+Removing inherited metadata can also strip embedded chapter names. The renderer now restores only the reviewed chapter titles explicitly after clearing source metadata. Check the actual MP4 chapter names and timestamps, not just the metadata input file.
+
+Measure the actual encoded AAC audio: its peaks can differ from the normalization filter's pre-codec result. `fix_final_audio_headroom.py` is the campaign-specific repair used after an encoded peak check. It expects the private filenames shown in the script, copies video without re-encoding, restores reviewed chapter titles, attenuates the existing normalized audio by6dB and writes192kb/s AAC. It then fully decodes and measures the encoded audio, and rejects a peak at or above full scale. Adapt the paths and gain deliberately for another export.
+
+A successful audio repair still requires checking video-packet identity against the validated source, the new decoded duration and the final metadata. The helper reports video verification and full visual/listening review as pending. Technical checks never grant privacy or publication clearance. Raw recordings, timeline inputs and generated files are not part of this source release.
