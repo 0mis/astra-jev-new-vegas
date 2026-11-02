@@ -1,5 +1,19 @@
 # Astra + Jev: Fallout: New Vegas
 
+A supervised agent-controller experiment in typed API decisions, stateful automation, recording checks, and recovery from failure.
+
+**[Read the architecture](ARCHITECTURE.md)** · **[Inspect the decision client](jev_bridge.py)** · **[Watch the recorded main-story run](https://youtu.be/tBVq09mDq6g)**
+
+## Engineering entry points
+
+| Question | Where to look |
+| --- | --- |
+| How are API calls bounded and uncertain usage accounted for? | [Decision client and reservation ledger](jev_bridge.py) |
+| How are inputs gated on real recording progress? | [Capture progress](capture_progress.py) and [input ownership](game_input.py) |
+| How does the controller stop repeating a failed plan? | [Independent watchdog](loop_watchdog.py) and [regression cases](test_loop_watchdog.py) |
+
+## Recorded result
+
 The Jev/Astra team completed an independent New Vegas main-story run on September 23, 2026. The ending slideshow and credits were observed and recorded. Jev made frequent bounded gameplay choices; Astra developed the controller, planned routes, diagnosed loops and crashes, and handled recoveries. When the local Jev ledger reached its $1 cap, Astra completed the remaining combat and final conversations using ordinary game input.
 
 This is the source of that supervised run. It is not a one-command unattended game player. The campaign required substantial development and intervention. The finished full-main-story edit runs 5h29m52s, with known pause/loading menus removed, accelerated footage labeled, public gameplay commentary, the independent ending, and a retrospective save-check montage.
